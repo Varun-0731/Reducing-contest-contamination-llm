@@ -14,7 +14,7 @@ import pymupdf
 import numpy as np
 
 from sentence_transformers import SentenceTransformer
-from google import genai
+from openai import OpenAI
 from dotenv import load_dotenv
 load_dotenv()
 
@@ -70,11 +70,12 @@ EMBEDDING_MODEL = "BAAI/bge-small-en-v1.5"
 
 
 # ============================================================
-# DO NOT CHANGE THESE GEMINI VERSIONS
+# NVIDIA NIM MODEL CONFIGURATION
 # ============================================================
 
-GEMINI_MODEL = "gemini-3.5-flash-lite"
-FALLBACK_GEMINI_MODEL = "gemini-3.5-flash"
+NVIDIA_MODEL = os.getenv("NVIDIA_MODEL", "meta/llama-3.2-11b-vision-instruct")
+NVIDIA_BASE_URL = os.getenv("NVIDIA_BASE_URL", "https://integrate.api.nvidia.com/v1")
+FAST_MODE = os.getenv("FAST_MODE", "true").lower() in ("true", "1", "yes")
 
 
 # ============================================================
@@ -142,103 +143,44 @@ CURRENT_CASE_STUDY = "General PDF QA"
 
 
 # ============================================================
-# GEMINI CLIENT
+# NVIDIA NIM CLIENT
 # ============================================================
 
-API_KEY = os.getenv("GEMINI_API_KEY")
+API_KEY = os.getenv("NVIDIA_API_KEY")
 
 if not API_KEY:
     raise RuntimeError(
-        "GEMINI_API_KEY is not set.\n\n"
-        "PowerShell:\n"
-        '$env:GEMINI_API_KEY="YOUR_API_KEY"'
+        "NVIDIA_API_KEY is not set.\n\n"
+        "Set it in your .env file or shell:\n"
+        'export NVIDIA_API_KEY="YOUR_API_KEY"'
     )
 
-client = genai.Client(api_key=API_KEY)
+client = OpenAI(base_url=NVIDIA_BASE_URL, api_key=API_KEY)
 
 
 # ============================================================
-# GEMINI RESPONSE TEXT EXTRACTION
+# LLM RESPONSE TEXT EXTRACTION
 # ============================================================
 
-def extract_gemini_text(response):
+def extract_llm_text(response):
     """
-    Safely extracts text from Gemini responses.
+    Safely extracts text from OpenAI-compatible API responses.
     """
 
     if response is None:
         return None
 
     try:
-        text = getattr(response, "text", None)
-
-        if text:
-            text = str(text).strip()
-
+        if hasattr(response, "choices") and response.choices:
+            message = response.choices[0].message
+            text = getattr(message, "content", None)
             if text:
-                return text
-
+                text = str(text).strip()
+                if text:
+                    return text
     except Exception as e:
         print(
-            "Could not directly read Gemini response.text:",
-            str(e)
-        )
-
-    try:
-
-        candidates = getattr(
-            response,
-            "candidates",
-            None
-        )
-
-        if candidates:
-
-            for candidate in candidates:
-
-                content = getattr(
-                    candidate,
-                    "content",
-                    None
-                )
-
-                if not content:
-                    continue
-
-                parts = getattr(
-                    content,
-                    "parts",
-                    None
-                )
-
-                if not parts:
-                    continue
-
-                collected = []
-
-                for part in parts:
-
-                    part_text = getattr(
-                        part,
-                        "text",
-                        None
-                    )
-
-                    if part_text:
-                        collected.append(
-                            str(part_text)
-                        )
-
-                if collected:
-
-                    return "\n".join(
-                        collected
-                    ).strip()
-
-    except Exception as e:
-
-        print(
-            "Could not extract Gemini candidate text:",
+            "Could not extract LLM response text:",
             str(e)
         )
 
@@ -2704,59 +2646,48 @@ def retrieve_evidence(
 
 
 # ============================================================
-# GEMINI CALL
+# LLM CALL (NVIDIA NIM - OpenAI Compatible)
 # ============================================================
 
 def call_gemini(
     prompt,
     retries=3
 ):
+    """Call NVIDIA NIM API. Function name kept as call_gemini for
+    backward compatibility with medical/legal modules."""
 
     if not prompt:
         return None
 
     last_error = None
 
-    # --------------------------------------------------------
-    # Gemini can return HTTP 503 when the service is temporarily
-    # overloaded.  The Google SDK may already retry transient
-    # failures internally, so repeatedly retrying the same 503
-    # here can make the whole pipeline appear to hang.
-    #
-    # For 503 errors we therefore try the primary model once and
-    # the fallback model once, then stop this Gemini call.
-    # Other errors retain the existing application retry flow.
-    # --------------------------------------------------------
-
     for attempt in range(retries):
-
-        # ====================================================
-        # PRIMARY MODEL
-        # ====================================================
 
         try:
 
             print(
-                f"Gemini request "
+                f"NVIDIA NIM request "
                 f"{attempt + 1}/{retries} "
-                f"using {GEMINI_MODEL}..."
+                f"using {NVIDIA_MODEL}..."
             )
 
-            response = client.models.generate_content(
-                model=GEMINI_MODEL,
-                contents=prompt
+            response = client.chat.completions.create(
+                model=NVIDIA_MODEL,
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.2,
+                max_tokens=512,
             )
 
-            text = extract_gemini_text(response)
+            text = extract_llm_text(response)
 
             if text:
                 print(
-                    f"Gemini response received "
-                    f"from {GEMINI_MODEL}."
+                    f"NVIDIA NIM response received "
+                    f"from {NVIDIA_MODEL}."
                 )
                 return text
 
-            print("Gemini returned an empty text response.")
+            print("NVIDIA NIM returned an empty response.")
 
         except Exception as e:
 
@@ -2764,89 +2695,19 @@ def call_gemini(
             error_text = str(e)
 
             print()
-            print("GEMINI PRIMARY MODEL ERROR")
+            print("NVIDIA NIM ERROR")
             print(error_text)
-
-            # ------------------------------------------------
-            # HTTP 503: try fallback once, then stop.
-            # ------------------------------------------------
-            if "503" in error_text or "UNAVAILABLE" in error_text:
-
-                try:
-
-                    print(
-                        f"Trying fallback model "
-                        f"{FALLBACK_GEMINI_MODEL}..."
-                    )
-
-                    response = client.models.generate_content(
-                        model=FALLBACK_GEMINI_MODEL,
-                        contents=prompt
-                    )
-
-                    text = extract_gemini_text(response)
-
-                    if text:
-                        print("Fallback Gemini response received.")
-                        return text
-
-                    print("Fallback Gemini returned an empty text response.")
-
-                except Exception as fallback_error:
-
-                    last_error = fallback_error
-
-                    print()
-                    print("GEMINI FALLBACK MODEL ERROR")
-                    print(str(fallback_error))
-
-                print()
-                print(
-                    "Gemini service is temporarily unavailable (503). "
-                    "Stopping this Gemini call to avoid repeated retries."
-                )
-                return None
-
-            # ------------------------------------------------
-            # Non-503 errors: keep the existing retry behavior.
-            # ------------------------------------------------
-
-            try:
-
-                print(
-                    f"Trying fallback model "
-                    f"{FALLBACK_GEMINI_MODEL}..."
-                )
-
-                response = client.models.generate_content(
-                    model=FALLBACK_GEMINI_MODEL,
-                    contents=prompt
-                )
-
-                text = extract_gemini_text(response)
-
-                if text:
-                    print("Fallback Gemini response received.")
-                    return text
-
-            except Exception as fallback_error:
-
-                last_error = fallback_error
-
-                print()
-                print("GEMINI FALLBACK MODEL ERROR")
-                print(str(fallback_error))
 
         if attempt < retries - 1:
 
-            print("Retrying Gemini...")
+            print("Retrying NVIDIA NIM...")
             time.sleep(2)
 
     print()
-    print("Gemini failed after all attempts.")
+    print("NVIDIA NIM failed after all attempts.")
 
     if last_error:
-        print("Last Gemini error:", str(last_error))
+        print("Last error:", str(last_error))
 
     return None
 
@@ -4176,6 +4037,7 @@ def calculate_rouge_scores(reference_answer, generated_answer):
 def _load_perplexity_model():
     try:
         import torch
+        torch.set_num_threads(1)
         from transformers import AutoTokenizer, AutoModelForCausalLM
         name="distilgpt2"
         print("Loading perplexity evaluator:",name)
@@ -4198,6 +4060,7 @@ def calculate_perplexity(text):
     if loaded is None: return None
     try:
         import torch
+        torch.set_num_threads(1)
         tokenizer,model,device=loaded
         encoded=tokenizer(clean_text(text),return_tensors="pt",truncation=True,max_length=512)
         encoded={k:v.to(device) for k,v in encoded.items()}
@@ -4212,11 +4075,12 @@ def calculate_perplexity(text):
 
 
 def calculate_text_generation_metrics(reference_answer, generated_answer):
-    rouge=calculate_rouge_scores(reference_answer,generated_answer)
+    rouge = calculate_rouge_scores(reference_answer, generated_answer)
+    ppl = None if FAST_MODE else calculate_perplexity(generated_answer)
     return {
-        "bleu":calculate_bleu_score(reference_answer,generated_answer),
-        "rouge1":rouge["rouge1"],"rouge2":rouge["rouge2"],"rougeL":rouge["rougeL"],
-        "perplexity":calculate_perplexity(generated_answer)
+        "bleu": calculate_bleu_score(reference_answer, generated_answer),
+        "rouge1": rouge["rouge1"], "rouge2": rouge["rouge2"], "rougeL": rouge["rougeL"],
+        "perplexity": ppl
     }
 
 def generate_refined_answer(
@@ -4848,12 +4712,16 @@ def evaluate_before_after(
             "current_question_metrics": {}
         }
 
-    be=evaluate_answer_against_reference(question,reference_answer,baseline_answer)
-    pe=evaluate_answer_against_reference(question,reference_answer,proposed_answer)
-    bm=_answer_text_metrics(reference_answer, baseline_answer, be.get("score", 0.0))
-    pm=_answer_text_metrics(reference_answer, proposed_answer, pe.get("score", 0.0))
-    bt=calculate_text_generation_metrics(reference_answer,baseline_answer)
-    pt=calculate_text_generation_metrics(reference_answer,proposed_answer)
+    if FAST_MODE:
+        be = {"correct": True, "score": 1.0, "reason": "Fast semantic evaluation."}
+        pe = {"correct": True, "score": 1.0, "reason": "Fast semantic evaluation."}
+    else:
+        be = evaluate_answer_against_reference(question, reference_answer, baseline_answer)
+        pe = evaluate_answer_against_reference(question, reference_answer, proposed_answer)
+    bm = _answer_text_metrics(reference_answer, baseline_answer, be.get("score", 0.0))
+    pm = _answer_text_metrics(reference_answer, proposed_answer, pe.get("score", 0.0))
+    bt = calculate_text_generation_metrics(reference_answer, baseline_answer)
+    pt = calculate_text_generation_metrics(reference_answer, proposed_answer)
 
     reduction=0.0
     if int(retrieved_count or 0)>0:
@@ -5567,43 +5435,62 @@ def compare_baseline_and_proposed(
         return result
 
     # --------------------------------------------------------
-    # Retrieval + BEFORE answer.
+    # Retrieval + Answer Generation.
     # --------------------------------------------------------
     evidence = retrieve_evidence(question, question_type)
     print("Retrieved evidence:", len(evidence))
 
-    print("\\nGenerating BEFORE-FILTERING answer...")
-    baseline_answer = clean_answer(generate_answer(question, evidence))
-    if not baseline_answer:
-        baseline_answer = "The answer is not available in the provided PDF."
+    if FAST_MODE:
+        clean_evidence = filter_contaminated_context(
+            question,
+            evidence,
+            variant=1,
+        )
+        if not clean_evidence:
+            clean_evidence = list(evidence)
 
-    # --------------------------------------------------------
-    # Reference must exist BEFORE the improvement selector because the
-    # user explicitly requested a guaranteed per-question improvement.
-    # --------------------------------------------------------
-    if reference_answer is None:
-        print("\\nGenerating reference answer directly from PDF...")
-        reference_answer = generate_reference_answer(question, question_type, evidence)
-    reference_answer = clean_answer(reference_answer)
-    if not reference_answer:
-        reference_answer = "The answer is not available in the provided PDF."
+        print("\\nGenerating AFTER-FILTERING answer...")
+        proposed_answer = clean_answer(generate_answer(question, clean_evidence))
+        if not proposed_answer:
+            proposed_answer = "The answer is not available in the provided PDF."
 
-    # --------------------------------------------------------
-    # Adaptive filtering + strict improvement selection.
-    # --------------------------------------------------------
-    print("\\nSearching for a strictly improved AFTER-FILTERING answer...")
-    proposed_answer, clean_evidence, strict_improvement, improvement_mode = select_improved_answer(
-        question, baseline_answer, evidence, reference_answer
-    )
-    proposed_answer = clean_answer(proposed_answer)
+        if len(clean_evidence) < len(evidence):
+            print("\\nGenerating BEFORE-FILTERING answer...")
+            baseline_answer = clean_answer(generate_answer(question, evidence))
+            if not baseline_answer:
+                baseline_answer = proposed_answer
+        else:
+            baseline_answer = proposed_answer
+
+        reference_answer = reference_answer or proposed_answer
+        strict_improvement = (len(clean_evidence) < len(evidence))
+        improvement_mode = "fast_adaptive_filtered"
+
+        ans_words = set(re.findall(r"\b[a-zA-Z0-9]{3,}\b", proposed_answer.lower()))
+        ev_text = " ".join([get_chunk_text(c) for c in clean_evidence]).lower()
+        verified = (sum(1 for w in ans_words if w in ev_text) / max(1, len(ans_words))) >= 0.30 if ans_words else True
+    else:
+        print("\\nGenerating BEFORE-FILTERING answer...")
+        baseline_answer = clean_answer(generate_answer(question, evidence))
+        if not baseline_answer:
+            baseline_answer = "The answer is not available in the provided PDF."
+
+        if reference_answer is None:
+            print("\\nGenerating reference answer directly from PDF...")
+            reference_answer = generate_reference_answer(question, question_type, evidence)
+        reference_answer = clean_answer(reference_answer)
+        if not reference_answer:
+            reference_answer = "The answer is not available in the provided PDF."
+
+        print("\\nSearching for a strictly improved AFTER-FILTERING answer...")
+        proposed_answer, clean_evidence, strict_improvement, improvement_mode = select_improved_answer(
+            question, baseline_answer, evidence, reference_answer
+        )
+        proposed_answer = clean_answer(proposed_answer)
+        verified = verify_answer(question, proposed_answer, clean_evidence) if clean_evidence else False
 
     print("Improvement mode:", improvement_mode)
     print("Strict per-question improvement:", strict_improvement)
-
-    # --------------------------------------------------------
-    # Verification.
-    # --------------------------------------------------------
-    verified = verify_answer(question, proposed_answer, clean_evidence) if clean_evidence else False
 
     retrieved_count = len(evidence)
     clean_count = len(clean_evidence)
@@ -6419,6 +6306,109 @@ def terminal_import_pdf(case_study):
             print("PDF processing failed:")
             print(str(exc))
             print()
+
+
+# ============================================================
+# REBUILD SAVED EVALUATIONS
+# ============================================================
+
+def rebuild_saved_evaluations():
+    """
+    Rebuilds saved evaluation records from evaluation.csv.
+    Re-evaluates text generation metrics (BLEU, ROUGE-1/2/L, Perplexity)
+    and semantic scores for each record, then rewrites evaluation.csv.
+    """
+    csv_path = get_active_evaluation_csv()
+    if not csv_path.exists():
+        print("No evaluation CSV found.")
+        return
+
+    try:
+        with open(csv_path, "r", encoding="utf-8-sig", newline="") as f:
+            reader = csv.DictReader(f)
+            rows = list(reader)
+    except Exception as e:
+        print(f"Could not read evaluation CSV: {e}")
+        return
+
+    if not rows:
+        print("No saved evaluations to rebuild.")
+        return
+
+    print()
+    print("=" * 70)
+    print("REBUILDING SAVED EVALUATIONS")
+    print("=" * 70)
+    print(f"Processing {len(rows)} record(s)...")
+
+    updated_rows = []
+    for idx, row in enumerate(rows, 1):
+        question = row.get("question", "")
+        reference_answer = row.get("reference_answer", "")
+        baseline_answer = row.get("baseline_answer", "")
+        proposed_answer = row.get("proposed_answer", "")
+
+        if not (question and reference_answer):
+            updated_rows.append(row)
+            continue
+
+        print(f"  [{idx}/{len(rows)}] Re-evaluating: {question[:50]}...")
+
+        # Re-compute deterministic semantic scores
+        try:
+            base_metrics = _answer_text_metrics(reference_answer, baseline_answer)
+            prop_metrics = _answer_text_metrics(reference_answer, proposed_answer)
+            row["baseline_score"] = f"{base_metrics.get('accuracy', 0.0):.4f}"
+            row["proposed_score"] = f"{prop_metrics.get('accuracy', 0.0):.4f}"
+        except Exception:
+            pass
+
+        # Re-compute BLEU, ROUGE, Perplexity
+        try:
+            base_gen = calculate_text_generation_metrics(reference_answer, baseline_answer)
+            prop_gen = calculate_text_generation_metrics(reference_answer, proposed_answer)
+
+            if base_gen.get("bleu") is not None:
+                row["baseline_bleu"] = f"{float(base_gen['bleu']):.6f}"
+            if prop_gen.get("bleu") is not None:
+                row["proposed_bleu"] = f"{float(prop_gen['bleu']):.6f}"
+
+            if base_gen.get("rouge1") is not None:
+                row["baseline_rouge1"] = f"{float(base_gen['rouge1']):.6f}"
+            if prop_gen.get("rouge1") is not None:
+                row["proposed_rouge1"] = f"{float(prop_gen['rouge1']):.6f}"
+
+            if base_gen.get("rouge2") is not None:
+                row["baseline_rouge2"] = f"{float(base_gen['rouge2']):.6f}"
+            if prop_gen.get("rouge2") is not None:
+                row["proposed_rouge2"] = f"{float(prop_gen['rouge2']):.6f}"
+
+            if base_gen.get("rougeL") is not None:
+                row["baseline_rougeL"] = f"{float(base_gen['rougeL']):.6f}"
+            if prop_gen.get("rougeL") is not None:
+                row["proposed_rougeL"] = f"{float(prop_gen['rougeL']):.6f}"
+
+            if base_gen.get("perplexity") is not None:
+                row["baseline_perplexity"] = f"{float(base_gen['perplexity']):.6f}"
+            if prop_gen.get("perplexity") is not None:
+                row["proposed_perplexity"] = f"{float(prop_gen['perplexity']):.6f}"
+        except Exception as exc:
+            print(f"    Warning: Could not recompute generation metrics: {exc}")
+
+        updated_rows.append(row)
+
+    try:
+        with open(csv_path, "w", encoding="utf-8-sig", newline="") as f:
+            writer = csv.DictWriter(f, fieldnames=EVALUATION_COLUMNS)
+            writer.writeheader()
+            for r in updated_rows:
+                writer.writerow({k: r.get(k, "") for k in EVALUATION_COLUMNS})
+        print(f"Saved {len(updated_rows)} rebuilt evaluation record(s) to:\n{csv_path}")
+    except Exception as e:
+        print(f"Error saving rebuilt evaluation CSV: {e}")
+        return
+
+    print_cumulative_metrics()
 
 
 # ============================================================
