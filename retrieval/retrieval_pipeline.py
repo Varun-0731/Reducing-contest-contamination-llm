@@ -1,6 +1,8 @@
 import os
 os.environ.setdefault("TRANSFORMERS_VERBOSITY", "error")
 os.environ.setdefault("TRANSFORMERS_NO_ADVISORY_WARNINGS", "1")
+os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS_WARNING", "1")
+os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
 import re
 import pickle
 import faiss
@@ -13,17 +15,9 @@ from functools import lru_cache
 import pymupdf
 import numpy as np
 
-from sentence_transformers import SentenceTransformer
 from openai import OpenAI
 from dotenv import load_dotenv
 load_dotenv()
-
-try:
-    from transformers.utils import logging as hf_logging
-    hf_logging.set_verbosity_error()
-    hf_logging.disable_progress_bar()
-except Exception:
-    pass
 
 # ============================================================
 # CONFIGURATION
@@ -205,21 +199,30 @@ def extract_llm_text(response):
 
 @lru_cache(maxsize=1)
 def get_embedding_model():
-
     print("Loading embedding model...")
-
     try:
+        from sentence_transformers import SentenceTransformer
+        try:
+            from transformers.utils import logging as hf_logging
+            hf_logging.set_verbosity_error()
+            hf_logging.disable_progress_bar()
+        except Exception:
+            pass
 
-        model = SentenceTransformer(
-            EMBEDDING_MODEL
-        )
+        try:
+            model = SentenceTransformer(
+                EMBEDDING_MODEL,
+                local_files_only=True,
+            )
+        except Exception:
+            model = SentenceTransformer(
+                EMBEDDING_MODEL,
+            )
 
         print("Embedding model loaded.")
-
         return model
 
     except Exception as e:
-
         raise RuntimeError(
             "Could not load the embedding model.\n"
             "Try restarting the terminal and Streamlit.\n\n"
@@ -5461,17 +5464,23 @@ def compare_baseline_and_proposed(
         if not clean_evidence:
             clean_evidence = list(evidence)
 
-        print("\\nGenerating AFTER-FILTERING answer...")
-        proposed_answer = clean_answer(generate_answer(question, clean_evidence))
-        if not proposed_answer:
-            proposed_answer = "The answer is not available in the provided PDF."
-
         if len(clean_evidence) < len(evidence):
-            print("\\nGenerating BEFORE-FILTERING answer...")
-            baseline_answer = clean_answer(generate_answer(question, evidence))
+            print("\nGenerating AFTER-FILTERING and BEFORE-FILTERING answers in parallel...")
+            from concurrent.futures import ThreadPoolExecutor
+            with ThreadPoolExecutor(max_workers=2) as executor:
+                future_after = executor.submit(generate_answer, question, clean_evidence)
+                future_before = executor.submit(generate_answer, question, evidence)
+                proposed_answer = clean_answer(future_after.result())
+                baseline_answer = clean_answer(future_before.result())
+            if not proposed_answer:
+                proposed_answer = "The answer is not available in the provided PDF."
             if not baseline_answer:
                 baseline_answer = proposed_answer
         else:
+            print("\nGenerating AFTER-FILTERING answer...")
+            proposed_answer = clean_answer(generate_answer(question, clean_evidence))
+            if not proposed_answer:
+                proposed_answer = "The answer is not available in the provided PDF."
             baseline_answer = proposed_answer
 
         reference_answer = reference_answer or proposed_answer
