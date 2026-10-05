@@ -41,8 +41,8 @@ SUGGESTED_PROMPTS = {
     "Medical Report Analysis": [
         "Summarize the patient's primary lab results and vitals.",
         "Are there any abnormal values or critical clinical indicators?",
-        "Provide a comprehensive diagnostic and care summary.",
-        "What follow-up recommendations are noted in the report?",
+        "What are the alternative medicines for this drug?",
+        "List all side effects and contraindications.",
     ],
     "Legal Court Case Analysis": [
         "What was the core holding and ratio decidendi of the judgment?",
@@ -60,6 +60,9 @@ def init_state():
         "chat_history": [],
         "last_result": None,
         "pending_prompt": None,
+        "medicine_profile": None,
+        "med_analysis_mode": None,   # None | 'full' | 'specific'
+        "med_drug_name": "",         # drug name when mode is 'specific'
     }
     for key, value in defaults.items():
         if key not in st.session_state:
@@ -113,6 +116,7 @@ def load_pdf_if_needed(uploaded_file, case_study):
     st.session_state.uploaded_signature = signature
     st.session_state.chat_history = []
     st.session_state.last_result = None
+    st.session_state.medicine_profile = None
     st.toast(f"Successfully loaded '{info['pdf_name']}'!", icon="✅")
 
 
@@ -136,6 +140,7 @@ def load_demo_pdf(case_study):
     st.session_state.uploaded_signature = signature
     st.session_state.chat_history = []
     st.session_state.last_result = None
+    st.session_state.medicine_profile = None
     st.toast(f"Loaded demo '{info['pdf_name']}' ({info['chunks']} chunks)!", icon="🎉")
 
 
@@ -269,7 +274,7 @@ def render_sidebar():
     # 1-Click Demo Document Loader
     demo_path = DEMO_PDFS.get(case_study)
     demo_name = demo_path.name if demo_path else "demo.pdf"
-    
+
     if st.sidebar.button(f"⚡ Load Demo: {demo_name}", use_container_width=True):
         load_demo_pdf(case_study)
 
@@ -916,6 +921,248 @@ def render_architecture():
         )
 
 
+def render_medicine_profile():
+    """Medicine Profile: ask the user what they want before running any LLM calls."""
+    from medical.medicine_analyzer import (
+        auto_analyze_medicine_pdf,
+        generate_alternative_medicines,
+        generate_side_effects,
+        generate_use_cases,
+        generate_mechanism_and_cure,
+        _fetch_evidence_for_drug,
+    )
+
+    try:
+        info = rag.get_current_pdf_info()
+        is_active = info["pdf_name"] not in ["No document selected", "No PDF loaded"]
+    except Exception:
+        is_active = False
+
+    if not is_active:
+        st.markdown(
+            """
+            <div class="rag-card" style="text-align: center; padding: 2.5rem 2rem;">
+                <div style="font-size: 3rem; margin-bottom: 0.75rem;">💊</div>
+                <h3 style="margin-bottom: 0.5rem; color: #ffffff;">No Medical PDF Loaded</h3>
+                <p style="color: #94a3b8; max-width: 560px; margin: 0 auto 1.5rem auto; line-height: 1.6;">
+                    Upload a medical / drug information PDF using the sidebar to get started.
+                </p>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+        return
+
+    # ── Header ──────────────────────────────────────────────
+    st.markdown(
+        """
+        <div style="display: flex; align-items: center; gap: 1rem; margin-bottom: 1.2rem;">
+            <div style="font-size: 2.5rem;">💊</div>
+            <div>
+                <h2 style="margin: 0; color: #ffffff; font-size: 1.5rem;">Medicine Profile</h2>
+                <p style="margin: 0.2rem 0 0; color: #94a3b8; font-size: 0.88rem;">
+                    Choose what you want to analyse from the uploaded PDF
+                </p>
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    # ── Choice cards ────────────────────────────────────────
+    st.markdown(
+        """
+        <div style="font-size: 0.8rem; font-weight: 700; text-transform: uppercase;
+                    color: #94a3b8; letter-spacing: 0.06em; margin-bottom: 0.75rem;">
+            What would you like to do?
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    col_full, col_specific = st.columns(2)
+
+    with col_full:
+        full_active = st.session_state.med_analysis_mode == "full"
+        border_col = "#a78bfa" if full_active else "rgba(255,255,255,0.1)"
+        st.markdown(
+            f"""
+            <div style="background: {'rgba(99,102,241,0.12)' if full_active else '#141414'};
+                        border: 1.5px solid {border_col}; border-radius: 12px;
+                        padding: 1.25rem 1.25rem; text-align: center; cursor: pointer;">
+                <div style="font-size: 2rem; margin-bottom: 0.5rem;">📋</div>
+                <div style="font-weight: 700; color: #ffffff; font-size: 1rem;">Full Prescription Details</div>
+                <div style="color: #94a3b8; font-size: 0.8rem; margin-top: 0.4rem; line-height: 1.5;">
+                    Analyse <strong>all medicines</strong> mentioned in the PDF — alternatives,
+                    side effects, use cases &amp; mechanism for the entire prescription.
+                </div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+        if st.button("📋 Full Prescription", key="btn_full", use_container_width=True):
+            st.session_state.med_analysis_mode = "full"
+            st.session_state.medicine_profile = None
+            st.rerun()
+
+    with col_specific:
+        spec_active = st.session_state.med_analysis_mode == "specific"
+        border_col2 = "#34d399" if spec_active else "rgba(255,255,255,0.1)"
+        st.markdown(
+            f"""
+            <div style="background: {'rgba(52,211,153,0.08)' if spec_active else '#141414'};
+                        border: 1.5px solid {border_col2}; border-radius: 12px;
+                        padding: 1.25rem 1.25rem; text-align: center; cursor: pointer;">
+                <div style="font-size: 2rem; margin-bottom: 0.5rem;">🔍</div>
+                <div style="font-weight: 700; color: #ffffff; font-size: 1rem;">Specific Drug Only</div>
+                <div style="color: #94a3b8; font-size: 0.8rem; margin-top: 0.4rem; line-height: 1.5;">
+                    Enter <strong>one drug name</strong> to get fast, targeted information —
+                    much quicker than scanning the whole prescription.
+                </div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+        if st.button("🔍 Specific Drug", key="btn_specific", use_container_width=True):
+            st.session_state.med_analysis_mode = "specific"
+            st.session_state.medicine_profile = None
+            st.rerun()
+
+    mode = st.session_state.med_analysis_mode
+    if not mode:
+        return  # wait for the user to pick
+
+    st.markdown("<hr style='border-color: rgba(255,255,255,0.08); margin: 1rem 0;'>", unsafe_allow_html=True)
+
+    # ── SPECIFIC DRUG flow ──────────────────────────────────
+    if mode == "specific":
+        drug_name = st.text_input(
+            "Enter the drug / medicine name:",
+            value=st.session_state.med_drug_name,
+            placeholder="e.g. Metformin, Ibuprofen, Amoxicillin...",
+            key="drug_name_input",
+        )
+        st.session_state.med_drug_name = drug_name
+
+        if not drug_name.strip():
+            st.info("Type a drug name above and click **Analyse Drug** to get details.")
+            return
+
+        if st.button(f"🔬 Analyse '{drug_name.strip()}'", type="primary", key="btn_analyse_drug"):
+            with st.spinner(f"Fetching details for **{drug_name.strip()}**..."):
+                try:
+                    evidence = _fetch_evidence_for_drug(drug_name.strip())
+                    profile = {
+                        "medicine_name": drug_name.strip(),
+                        "pdf_name": info.get("pdf_name", "Uploaded PDF"),
+                        "alternatives": generate_alternative_medicines(drug_name.strip(), evidence),
+                        "side_effects": generate_side_effects(drug_name.strip(), evidence),
+                        "use_cases": generate_use_cases(drug_name.strip(), evidence),
+                        "mechanism": generate_mechanism_and_cure(drug_name.strip(), evidence),
+                    }
+                    st.session_state.medicine_profile = profile
+                except Exception as exc:
+                    st.error(f"Analysis failed: {exc}")
+                    return
+
+    # ── FULL PRESCRIPTION flow ──────────────────────────────
+    elif mode == "full":
+        if not st.session_state.medicine_profile:
+            st.info(
+                "This will analyse **all medicines** in the PDF. "
+                "It takes 60–90 seconds. Click below to start."
+            )
+        if st.button("📋 Run Full Prescription Analysis", type="primary", key="btn_run_full"):
+            with st.spinner("Analysing full prescription — please wait..."):
+                try:
+                    profile = auto_analyze_medicine_pdf()
+                    st.session_state.medicine_profile = profile
+                    st.toast(f"Done! Medicine: {profile.get('medicine_name', '')}", icon="💊")
+                except Exception as exc:
+                    st.error(f"Analysis failed: {exc}")
+                    return
+
+    # ── Render profile if ready ─────────────────────────────
+    profile = st.session_state.get("medicine_profile")
+    if not profile:
+        return
+
+    medicine_name = profile.get("medicine_name", "Unknown Medicine")
+
+    st.markdown(
+        f"""
+        <div style="background: linear-gradient(135deg, rgba(99,102,241,0.15) 0%, rgba(168,85,247,0.1) 100%);
+                    border: 1px solid rgba(99,102,241,0.4); border-radius: 14px;
+                    padding: 1.1rem 1.4rem; margin-bottom: 1.25rem;
+                    display: flex; align-items: center; gap: 1rem;">
+            <div style="font-size: 2rem;">💊</div>
+            <div>
+                <div style="font-size: 0.7rem; font-weight: 700; text-transform: uppercase;
+                            color: #a78bfa; letter-spacing: 0.08em;">Medicine</div>
+                <div style="font-size: 1.4rem; font-weight: 800; color: #ffffff; margin-top: 0.1rem;">
+                    {medicine_name}
+                </div>
+                <div style="font-size: 0.78rem; color: #94a3b8; margin-top: 0.1rem;">
+                    Source: {profile.get('pdf_name', 'Uploaded PDF')}
+                </div>
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    tab_alt, tab_se, tab_uc, tab_mech = st.tabs([
+        "🔄 Alternative Medicines",
+        "⚠️ Side Effects",
+        "✅ Use Cases & Indications",
+        "🧬 Mechanism & How It Cures",
+    ])
+
+    SECTION_STYLE = (
+        "background: #141414; border: 1px solid rgba(255,255,255,0.1); "
+        "border-radius: 12px; padding: 1.25rem 1.5rem; line-height: 1.75;"
+    )
+
+    with tab_alt:
+        st.markdown(
+            f"""<div style="font-size:0.78rem;font-weight:600;color:#a78bfa;text-transform:uppercase;
+                letter-spacing:0.06em;margin-bottom:0.6rem;">🔄 Alternatives for {medicine_name}</div>""",
+            unsafe_allow_html=True,
+        )
+        st.markdown(profile.get('alternatives', 'N/A'))
+
+    with tab_se:
+        st.markdown(
+            f"""<div style="font-size:0.78rem;font-weight:600;color:#f87171;text-transform:uppercase;
+                letter-spacing:0.06em;margin-bottom:0.6rem;">⚠️ Side Effects &amp; Contraindications</div>""",
+            unsafe_allow_html=True,
+        )
+        st.markdown(profile.get('side_effects', 'N/A'))
+
+    with tab_uc:
+        st.markdown(
+            f"""<div style="font-size:0.78rem;font-weight:600;color:#34d399;text-transform:uppercase;
+                letter-spacing:0.06em;margin-bottom:0.6rem;">✅ Use Cases &amp; Indications</div>""",
+            unsafe_allow_html=True,
+        )
+        st.markdown(profile.get('use_cases', 'N/A'))
+
+    with tab_mech:
+        st.markdown(
+            f"""<div style="font-size:0.78rem;font-weight:600;color:#60a5fa;text-transform:uppercase;
+                letter-spacing:0.06em;margin-bottom:0.6rem;">🧬 Mechanism &amp; How It Cures</div>""",
+            unsafe_allow_html=True,
+        )
+        st.markdown(profile.get('mechanism', 'N/A'))
+
+    # Reset button
+    if st.button("↩️ Analyse a Different Drug", key="btn_reset_med"):
+        st.session_state.medicine_profile = None
+        st.session_state.med_analysis_mode = None
+        st.session_state.med_drug_name = ""
+        st.rerun()
+
+
 def main():
     case_study = render_sidebar()
 
@@ -932,18 +1179,31 @@ def main():
         chunks=info.get("chunks", 0),
     )
 
-    pages = [
-        "💬 Chat & QA",
-        "📄 Document Overview",
-        "🔎 Retrieval Analysis",
-        "🧹 Contamination Shield",
-        "📊 Benchmark Analytics",
-        "🏗️ System Architecture",
-    ]
+    if case_study == "Medical Report Analysis":
+        pages = [
+            "💊 Medicine Profile",
+            "💬 Chat & QA",
+            "📄 Document Overview",
+            "🔎 Retrieval Analysis",
+            "🧹 Contamination Shield",
+            "📊 Benchmark Analytics",
+            "🏗️ System Architecture",
+        ]
+    else:
+        pages = [
+            "💬 Chat & QA",
+            "📄 Document Overview",
+            "🔎 Retrieval Analysis",
+            "🧹 Contamination Shield",
+            "📊 Benchmark Analytics",
+            "🏗️ System Architecture",
+        ]
 
     page = st.sidebar.radio("Navigation", pages)
 
-    if page == "💬 Chat & QA":
+    if page == "💊 Medicine Profile":
+        render_medicine_profile()
+    elif page == "💬 Chat & QA":
         render_chat(case_study)
     elif page == "📄 Document Overview":
         render_overview(case_study)
