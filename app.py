@@ -63,6 +63,10 @@ def init_state():
         "medicine_profile": None,
         "med_analysis_mode": None,   # None | 'full' | 'specific'
         "med_drug_name": "",         # drug name when mode is 'specific'
+        "legal_defense_profile": None,
+        "legal_analysis_mode": None,    # None | 'full' | 'specific' | 'situation'
+        "legal_target_section": "",     # section/charge when mode is 'specific'
+        "legal_situation_text": "",     # scenario text when mode is 'situation'
     }
     for key, value in defaults.items():
         if key not in st.session_state:
@@ -923,14 +927,13 @@ def render_architecture():
 
 def render_medicine_profile():
     """Medicine Profile: ask the user what they want before running any LLM calls."""
-    from medical.medicine_analyzer import (
-        auto_analyze_medicine_pdf,
-        generate_alternative_medicines,
-        generate_side_effects,
-        generate_use_cases,
-        generate_mechanism_and_cure,
-        _fetch_evidence_for_drug,
-    )
+    import importlib
+    import medical.medicine_analyzer as med_analyzer
+    importlib.reload(med_analyzer)
+
+    auto_analyze_medicine_pdf = med_analyzer.auto_analyze_medicine_pdf
+    stream_medicine_profile = med_analyzer.stream_medicine_profile
+    _fetch_evidence_for_drug = med_analyzer._fetch_evidence_for_drug
 
     try:
         info = rag.get_current_pdf_info()
@@ -1034,6 +1037,101 @@ def render_medicine_profile():
 
     st.markdown("<hr style='border-color: rgba(255,255,255,0.08); margin: 1rem 0;'>", unsafe_allow_html=True)
 
+    # ── Stepwise Analysis Runner ───────────────────────────
+    def _run_stepwise_analysis(target_drug: str = None):
+        status_box = st.status("🔬 Initiating stepwise clinical analysis...", expanded=True)
+        prog_bar = st.progress(0, text="Fetching relevant medical evidence...")
+
+        header_placeholder = st.empty()
+
+        slots = {
+            "alternatives": st.empty(),
+            "side_effects": st.empty(),
+            "use_cases": st.empty(),
+            "mechanism": st.empty(),
+            "summary": st.empty(),
+        }
+
+        profile = {
+            "medicine_name": target_drug or "Unknown Medicine",
+            "pdf_name": info.get("pdf_name", "Uploaded PDF"),
+            "alternatives": None,
+            "side_effects": None,
+            "use_cases": None,
+            "mechanism": None,
+            "summary": None,
+        }
+
+        step_titles = {
+            "alternatives": "🔄 Alternative Medicines",
+            "side_effects": "⚠️ Side Effects & Contraindications",
+            "use_cases": "✅ Use Cases & Indications",
+            "mechanism": "🧬 Mechanism & How It Cures",
+            "summary": "📋 Clinical Summary & Takeaway",
+        }
+
+        try:
+            for item in stream_medicine_profile(medicine_name=target_drug):
+                if item["type"] == "metadata":
+                    med_name = item["medicine_name"]
+                    profile["medicine_name"] = med_name
+                    profile["pdf_name"] = item["pdf_name"]
+                    status_box.update(label=f"💊 Analysing **{med_name}** step-by-step...")
+                    header_placeholder.markdown(
+                        f"""
+                        <div style="background: linear-gradient(135deg, rgba(99,102,241,0.15) 0%, rgba(168,85,247,0.1) 100%);
+                                    border: 1px solid rgba(99,102,241,0.4); border-radius: 14px;
+                                    padding: 1.1rem 1.4rem; margin-bottom: 1.25rem;
+                                    display: flex; align-items: center; gap: 1rem;">
+                            <div style="font-size: 2rem;">💊</div>
+                            <div>
+                                <div style="font-size: 0.7rem; font-weight: 700; text-transform: uppercase;
+                                            color: #a78bfa; letter-spacing: 0.08em;">Medicine Identified</div>
+                                <div style="font-size: 1.4rem; font-weight: 800; color: #ffffff; margin-top: 0.1rem;">
+                                    {med_name}
+                                </div>
+                                <div style="font-size: 0.78rem; color: #94a3b8; margin-top: 0.1rem;">
+                                    Source: {item['pdf_name']}
+                                </div>
+                            </div>
+                        </div>
+                        """,
+                        unsafe_allow_html=True,
+                    )
+                elif item["type"] == "section":
+                    key = item["key"]
+                    title = item["title"]
+                    icon = item["icon"]
+                    content = item["content"]
+                    step = item["step"]
+                    total = item["total"]
+
+                    profile[key] = content
+                    pct = step / total
+                    prog_bar.progress(pct, text=f"Step {step}/{total}: {icon} {title} ready.")
+                    status_box.write(f"✅ Generated **{icon} {title}**")
+
+                    label = step_titles.get(key, f"{icon} {title}")
+                    with slots[key]:
+                        with st.expander(label, expanded=True):
+                            if key == "summary":
+                                st.markdown(
+                                    f"""<div style="background: rgba(56,189,248,0.08); border-left: 3px solid #38bdf8;
+                                                padding: 1rem 1.25rem; border-radius: 8px; font-size: 0.95rem; line-height: 1.7;">
+                                        {content}
+                                    </div>""",
+                                    unsafe_allow_html=True,
+                                )
+                            else:
+                                st.markdown(content)
+
+            status_box.update(label=f"✅ Analysis for **{profile['medicine_name']}** complete!", state="complete", expanded=False)
+            st.session_state.medicine_profile = profile
+            st.toast(f"Medicine Profile for {profile['medicine_name']} complete!", icon="💊")
+        except Exception as exc:
+            status_box.update(label="Analysis error", state="error")
+            st.error(f"Analysis failed: {exc}")
+
     # ── SPECIFIC DRUG flow ──────────────────────────────────
     if mode == "specific":
         drug_name = st.text_input(
@@ -1049,38 +1147,17 @@ def render_medicine_profile():
             return
 
         if st.button(f"🔬 Analyse '{drug_name.strip()}'", type="primary", key="btn_analyse_drug"):
-            with st.spinner(f"Fetching details for **{drug_name.strip()}**..."):
-                try:
-                    evidence = _fetch_evidence_for_drug(drug_name.strip())
-                    profile = {
-                        "medicine_name": drug_name.strip(),
-                        "pdf_name": info.get("pdf_name", "Uploaded PDF"),
-                        "alternatives": generate_alternative_medicines(drug_name.strip(), evidence),
-                        "side_effects": generate_side_effects(drug_name.strip(), evidence),
-                        "use_cases": generate_use_cases(drug_name.strip(), evidence),
-                        "mechanism": generate_mechanism_and_cure(drug_name.strip(), evidence),
-                    }
-                    st.session_state.medicine_profile = profile
-                except Exception as exc:
-                    st.error(f"Analysis failed: {exc}")
-                    return
+            _run_stepwise_analysis(target_drug=drug_name.strip())
 
     # ── FULL PRESCRIPTION flow ──────────────────────────────
     elif mode == "full":
         if not st.session_state.medicine_profile:
             st.info(
-                "This will analyse **all medicines** in the PDF. "
-                "It takes 60–90 seconds. Click below to start."
+                "This will analyse **all medicines** in the PDF step-by-step. "
+                "Each section will appear immediately as soon as it is generated. Click below to start."
             )
         if st.button("📋 Run Full Prescription Analysis", type="primary", key="btn_run_full"):
-            with st.spinner("Analysing full prescription — please wait..."):
-                try:
-                    profile = auto_analyze_medicine_pdf()
-                    st.session_state.medicine_profile = profile
-                    st.toast(f"Done! Medicine: {profile.get('medicine_name', '')}", icon="💊")
-                except Exception as exc:
-                    st.error(f"Analysis failed: {exc}")
-                    return
+            _run_stepwise_analysis(target_drug=None)
 
     # ── Render profile if ready ─────────────────────────────
     profile = st.session_state.get("medicine_profile")
@@ -1111,11 +1188,30 @@ def render_medicine_profile():
         unsafe_allow_html=True,
     )
 
-    tab_alt, tab_se, tab_uc, tab_mech = st.tabs([
+    # Quick highlight summary card if available
+    if profile.get("summary"):
+        st.markdown(
+            f"""
+            <div style="background: rgba(56,189,248,0.07); border-left: 3.5px solid #38bdf8;
+                        border-radius: 8px; padding: 1rem 1.25rem; margin-bottom: 1.25rem; line-height: 1.7;">
+                <div style="font-size: 0.75rem; font-weight: 700; color: #38bdf8; text-transform: uppercase;
+                            letter-spacing: 0.07em; margin-bottom: 0.35rem;">
+                    📋 Clinical Summary
+                </div>
+                <div style="color: #e2e8f0; font-size: 0.92rem;">
+                    {profile.get('summary')}
+                </div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+    tab_alt, tab_se, tab_uc, tab_mech, tab_sum = st.tabs([
         "🔄 Alternative Medicines",
         "⚠️ Side Effects",
         "✅ Use Cases & Indications",
         "🧬 Mechanism & How It Cures",
+        "📋 Summary",
     ])
 
     SECTION_STYLE = (
@@ -1155,11 +1251,428 @@ def render_medicine_profile():
         )
         st.markdown(profile.get('mechanism', 'N/A'))
 
+    with tab_sum:
+        st.markdown(
+            f"""<div style="font-size:0.78rem;font-weight:600;color:#38bdf8;text-transform:uppercase;
+                letter-spacing:0.06em;margin-bottom:0.6rem;">📋 Clinical Summary for {medicine_name}</div>""",
+            unsafe_allow_html=True,
+        )
+        st.markdown(
+            f"""<div style="background: rgba(56,189,248,0.08); border-left: 3px solid #38bdf8;
+                        padding: 1rem 1.25rem; border-radius: 8px; font-size: 0.95rem; line-height: 1.7;">
+                {profile.get('summary', 'N/A')}
+            </div>""",
+            unsafe_allow_html=True,
+        )
+
     # Reset button
     if st.button("↩️ Analyse a Different Drug", key="btn_reset_med"):
         st.session_state.medicine_profile = None
         st.session_state.med_analysis_mode = None
         st.session_state.med_drug_name = ""
+        st.rerun()
+
+
+def render_legal_defense():
+    """Legal Defense Strategy: stepwise streaming analysis of sections and defense hierarchy."""
+    import importlib
+    import legal.legal_analysis as legal_module
+    importlib.reload(legal_module)
+
+    stream_legal_defense_strategy = legal_module.stream_legal_defense_strategy
+    stream_situation_legal_analysis = getattr(legal_module, "stream_situation_legal_analysis", None)
+
+    try:
+        info = rag.get_current_pdf_info()
+        is_active = info["pdf_name"] not in ["No document selected", "No PDF loaded"]
+    except Exception:
+        is_active = False
+
+    if not is_active:
+        st.markdown(
+            """
+            <div class="rag-card" style="text-align: center; padding: 2.5rem 2rem;">
+                <div style="font-size: 3rem; margin-bottom: 0.75rem;">⚖️</div>
+                <h3 style="margin-bottom: 0.5rem; color: #ffffff;">No Legal Court Case PDF Loaded</h3>
+                <p style="color: #94a3b8; max-width: 560px; margin: 0 auto 1.5rem auto; line-height: 1.6;">
+                    Upload a court case, charge sheet, or judgment PDF using the sidebar to get started.
+                </p>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+        return
+
+    # Header
+    st.markdown(
+        """
+        <div style="display: flex; align-items: center; gap: 1rem; margin-bottom: 1.2rem;">
+            <div style="font-size: 2.5rem;">⚖️</div>
+            <div>
+                <h2 style="margin: 0; color: #ffffff; font-size: 1.6rem; font-weight: 700;">
+                    Legal Defense &amp; Statutory Hierarchy Strategy
+                </h2>
+                <p style="margin: 0.2rem 0 0 0; color: #94a3b8; font-size: 0.88rem;">
+                    Decides applicable statutory sections for cases or situations, identifies the single best defense,
+                    and ranks all available defense strategies in strict decreasing order of hierarchy.
+                </p>
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    # ── Choice cards (3 options) ────────────────────────────
+    st.markdown(
+        """
+        <div style="font-size: 0.8rem; font-weight: 700; text-transform: uppercase;
+                    color: #94a3b8; letter-spacing: 0.06em; margin-bottom: 0.75rem;">
+            What would you like to do?
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    col_full, col_specific, col_situation = st.columns(3)
+
+    with col_full:
+        full_active = st.session_state.legal_analysis_mode == "full"
+        border_col = "#facc15" if full_active else "rgba(255,255,255,0.1)"
+        st.markdown(
+            f"""
+            <div style="background: {'rgba(234,179,8,0.12)' if full_active else '#141414'};
+                        border: 1.5px solid {border_col}; border-radius: 12px;
+                        padding: 1.15rem 1rem; text-align: center; cursor: pointer; min-height: 175px;">
+                <div style="font-size: 1.8rem; margin-bottom: 0.4rem;">📋</div>
+                <div style="font-weight: 700; color: #ffffff; font-size: 0.95rem;">Full Case Defense</div>
+                <div style="color: #94a3b8; font-size: 0.78rem; margin-top: 0.35rem; line-height: 1.45;">
+                    Analyze the <strong>entire court record</strong> — all charged sections, allegations,
+                    defense shield &amp; 4-tier hierarchy.
+                </div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+        if st.button("📋 Full Case Defense", key="btn_legal_full", use_container_width=True):
+            st.session_state.legal_analysis_mode = "full"
+            st.session_state.legal_defense_profile = None
+            st.rerun()
+
+    with col_specific:
+        spec_active = st.session_state.legal_analysis_mode == "specific"
+        border_col2 = "#38bdf8" if spec_active else "rgba(255,255,255,0.1)"
+        st.markdown(
+            f"""
+            <div style="background: {'rgba(56,189,248,0.08)' if spec_active else '#141414'};
+                        border: 1.5px solid {border_col2}; border-radius: 12px;
+                        padding: 1.15rem 1rem; text-align: center; cursor: pointer; min-height: 175px;">
+                <div style="font-size: 1.8rem; margin-bottom: 0.4rem;">🎯</div>
+                <div style="font-weight: 700; color: #ffffff; font-size: 0.95rem;">Specific Section Defense</div>
+                <div style="color: #94a3b8; font-size: 0.78rem; margin-top: 0.35rem; line-height: 1.45;">
+                    Enter <strong>one specific IPC section</strong> (e.g. Sec 307) for fast, targeted
+                    defense strategy &amp; hierarchy.
+                </div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+        if st.button("🎯 Specific Section", key="btn_legal_specific", use_container_width=True):
+            st.session_state.legal_analysis_mode = "specific"
+            st.session_state.legal_defense_profile = None
+            st.rerun()
+
+    with col_situation:
+        sit_active = st.session_state.legal_analysis_mode == "situation"
+        border_col3 = "#34d399" if sit_active else "rgba(255,255,255,0.1)"
+        st.markdown(
+            f"""
+            <div style="background: {'rgba(52,211,153,0.08)' if sit_active else '#141414'};
+                        border: 1.5px solid {border_col3}; border-radius: 12px;
+                        padding: 1.15rem 1rem; text-align: center; cursor: pointer; min-height: 175px;">
+                <div style="font-size: 1.8rem; margin-bottom: 0.4rem;">💡</div>
+                <div style="font-weight: 700; color: #ffffff; font-size: 0.95rem;">Factual Situation Decider</div>
+                <div style="color: #94a3b8; font-size: 0.78rem; margin-top: 0.35rem; line-height: 1.45;">
+                    Describe <strong>any dispute or incident</strong> — AI decides which sections apply
+                    and formulates the defense hierarchy.
+                </div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+        if st.button("💡 Factual Situation", key="btn_legal_situation", use_container_width=True):
+            st.session_state.legal_analysis_mode = "situation"
+            st.session_state.legal_defense_profile = None
+            st.rerun()
+
+    mode = st.session_state.legal_analysis_mode
+    if not mode:
+        return  # wait for choice
+
+    st.markdown("<hr style='border-color: rgba(255,255,255,0.08); margin: 1rem 0;'>", unsafe_allow_html=True)
+
+    def _run_stepwise_legal_analysis(target_sec: str = None, situation_scenario: str = None):
+        status_box = st.status("⚖️ Initiating stepwise legal defense analysis...", expanded=True)
+        prog_bar = st.progress(0, text="Examining facts & statutory provisions...")
+
+        header_placeholder = st.empty()
+
+        slots = {
+            "charged_sections": st.empty(),
+            "primary_defense": st.empty(),
+            "defense_hierarchy": st.empty(),
+            "procedural_strategy": st.empty(),
+            "summary": st.empty(),
+        }
+
+        profile = {
+            "case_title": "Court Case Matter" if not situation_scenario else "Factual Incident Analysis",
+            "pdf_name": info.get("pdf_name", "Court Case PDF") if not situation_scenario else "Custom Factual Scenario",
+            "charged_sections": None,
+            "primary_defense": None,
+            "defense_hierarchy": None,
+            "procedural_strategy": None,
+            "summary": None,
+        }
+
+        step_titles = {
+            "charged_sections": "📜 Involved Sections & Allegations" if not situation_scenario else "📜 Applicable Statutory Sections (Offense Classification)",
+            "primary_defense": "🛡️ Best Supporting Defense Section (Rank 1)",
+            "defense_hierarchy": "📊 Defense Hierarchy (Decreasing Order of Strength)",
+            "procedural_strategy": "⚖️ Appellate & Trial Strategy" if not situation_scenario else "⚖️ Immediate Legal Safeguards",
+            "summary": "📋 Executive Counsel Summary",
+        }
+
+        try:
+            if situation_scenario and stream_situation_legal_analysis:
+                generator = stream_situation_legal_analysis(situation_scenario)
+            else:
+                generator = stream_legal_defense_strategy(target_section=target_sec)
+
+            for item in generator:
+                if item["type"] == "metadata":
+                    title = item["case_title"]
+                    profile["case_title"] = title
+                    profile["pdf_name"] = item["pdf_name"]
+                    status_box.update(label=f"⚖️ Formulating Defense Strategy for **{title}**...")
+                    header_placeholder.markdown(
+                        f"""
+                        <div style="background: linear-gradient(135deg, rgba(234,179,8,0.15) 0%, rgba(249,115,22,0.1) 100%);
+                                    border: 1px solid rgba(234,179,8,0.4); border-radius: 14px;
+                                    padding: 1.1rem 1.4rem; margin-bottom: 1.25rem;
+                                    display: flex; align-items: center; gap: 1rem;">
+                            <div style="font-size: 2rem;">⚖️</div>
+                            <div>
+                                <div style="font-size: 0.7rem; font-weight: 700; text-transform: uppercase;
+                                            color: #facc15; letter-spacing: 0.08em;">Matter Identified</div>
+                                <div style="font-size: 1.35rem; font-weight: 800; color: #ffffff; margin-top: 0.1rem;">
+                                    {title}
+                                </div>
+                                <div style="font-size: 0.78rem; color: #94a3b8; margin-top: 0.1rem;">
+                                    Source: {item['pdf_name']}
+                                </div>
+                            </div>
+                        </div>
+                        """,
+                        unsafe_allow_html=True,
+                    )
+                elif item["type"] == "section":
+                    key = item["key"]
+                    title = item["title"]
+                    icon = item["icon"]
+                    content = item["content"]
+                    step = item["step"]
+                    total = item["total"]
+
+                    profile[key] = content
+                    pct = step / total
+                    prog_bar.progress(pct, text=f"Step {step}/{total}: {icon} {title} ready.")
+                    status_box.write(f"✅ Formulated **{icon} {title}**")
+
+                    label = step_titles.get(key, f"{icon} {title}")
+                    with slots[key]:
+                        with st.expander(label, expanded=True):
+                            if key == "summary":
+                                st.markdown(
+                                    f"""<div style="background: rgba(234,179,8,0.08); border-left: 3px solid #facc15;
+                                                padding: 1rem 1.25rem; border-radius: 8px; font-size: 0.95rem; line-height: 1.7;">
+                                        {content}
+                                    </div>""",
+                                    unsafe_allow_html=True,
+                                )
+                            else:
+                                st.markdown(content)
+
+            status_box.update(label=f"✅ Analysis for **{profile['case_title']}** complete!", state="complete", expanded=False)
+            st.session_state.legal_defense_profile = profile
+            st.toast("Legal Analysis complete!", icon="⚖️")
+        except Exception as exc:
+            status_box.update(label="Strategy generation error", state="error")
+            st.error(f"Analysis failed: {exc}")
+
+    # ── SPECIFIC SECTION flow ──────────────────────────────
+    if mode == "specific":
+        section_name = st.text_input(
+            "Enter the specific IPC / Statutory section to defend:",
+            value=st.session_state.legal_target_section,
+            placeholder="e.g. Section 307 IPC, Section 323 IPC, Section 420 IPC...",
+            key="legal_section_input",
+        )
+        st.session_state.legal_target_section = section_name
+
+        if not section_name.strip():
+            st.info("Type an IPC section above and click **Formulate Defense** to get details.")
+            return
+
+        if st.button(f"⚖️ Formulate Defense for '{section_name.strip()}'", type="primary", key="btn_analyse_legal_sec"):
+            _run_stepwise_legal_analysis(target_sec=section_name.strip())
+
+    # ── FULL CASE flow ──────────────────────────────────────
+    elif mode == "full":
+        if not st.session_state.legal_defense_profile:
+            st.info("This will analyze all charges in the court record and generate the ranked defense hierarchy step-by-step. Click below to start.")
+        if st.button("📋 Run Full Case Defense Analysis", type="primary", key="btn_run_legal_full"):
+            _run_stepwise_legal_analysis(target_sec=None)
+
+    # ── SITUATION / INCIDENT flow ──────────────────────────
+    elif mode == "situation":
+        st.markdown(
+            """
+            <div style="font-size: 0.82rem; font-weight: 600; color: #34d399; margin-bottom: 0.4rem;">
+                Describe the factual incident or pick a quick sample scenario:
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+        col_s1, col_s2, col_s3 = st.columns(3)
+        with col_s1:
+            if st.button("📌 Mutual Altercation", key="btn_sample_1", use_container_width=True):
+                st.session_state.legal_situation_text = (
+                    "During a dispute outside a residence, Person A confronted Person B. "
+                    "A physical struggle began where Person B raised an iron rod to strike. "
+                    "Person A grabbed a wooden stick and struck Person B on the shoulder in self-defense to escape, "
+                    "causing a bone fracture."
+                )
+                st.session_state.legal_defense_profile = None
+                st.rerun()
+        with col_s2:
+            if st.button("📌 Trespass & Threat", key="btn_sample_2", use_container_width=True):
+                st.session_state.legal_situation_text = (
+                    "A landlord broke into the tenant's rented premises at night without notice, "
+                    "threatened to physically harm the tenant if he did not vacate immediately, "
+                    "and threw his belongings onto the street."
+                )
+                st.session_state.legal_defense_profile = None
+                st.rerun()
+        with col_s3:
+            if st.button("📌 Financial Cheating", key="btn_sample_3", use_container_width=True):
+                st.session_state.legal_situation_text = (
+                    "Person A collected Rs 2,50,000 from Person B promising an allotment of commercial land, "
+                    "handed over a forged allotment letter with fake municipal seals, and subsequently vanished."
+                )
+                st.session_state.legal_defense_profile = None
+                st.rerun()
+
+        situation_text = st.text_area(
+            "Incident description:",
+            value=st.session_state.legal_situation_text,
+            placeholder="Type or paste any scenario, altercation, dispute, or incident here...",
+            height=110,
+            key="situation_input",
+            label_visibility="collapsed",
+        )
+        st.session_state.legal_situation_text = situation_text
+
+        if not situation_text.strip():
+            st.info("Describe an incident or click one of the sample scenarios above, then click **Decide Sections & Formulate Defense**.")
+            return
+
+        if st.button("⚖️ Decide Sections & Formulate Defense Strategy", type="primary", key="btn_analyse_situation"):
+            _run_stepwise_legal_analysis(situation_scenario=situation_text.strip())
+
+    profile = st.session_state.get("legal_defense_profile")
+    if not profile:
+        return
+
+    case_title = profile.get("case_title", "Court Case Matter")
+
+    # Executive Summary Banner
+    if profile.get("summary"):
+        st.markdown(
+            f"""
+            <div style="background: rgba(234,179,8,0.07); border-left: 3.5px solid #facc15;
+                        border-radius: 8px; padding: 1rem 1.25rem; margin-bottom: 1.25rem; line-height: 1.7;">
+                <div style="font-size: 0.75rem; font-weight: 700; color: #facc15; text-transform: uppercase;
+                            letter-spacing: 0.07em; margin-bottom: 0.35rem;">
+                    📋 Executive Counsel Defense Summary
+                </div>
+                <div style="color: #e2e8f0; font-size: 0.92rem;">
+                    {profile.get('summary')}
+                </div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+    tab_sec, tab_best, tab_hier, tab_proc, tab_sum = st.tabs([
+        "📜 Charged Sections & Facts",
+        "🛡️ Best Defense Section (Rank 1)",
+        "📊 Defense Hierarchy",
+        "⚖️ Appellate & Trial Strategy",
+        "📋 Executive Summary",
+    ])
+
+    with tab_sec:
+        st.markdown(
+            f"""<div style="font-size:0.78rem;font-weight:600;color:#facc15;text-transform:uppercase;
+                letter-spacing:0.06em;margin-bottom:0.6rem;">📜 Charged Sections &amp; Core Facts</div>""",
+            unsafe_allow_html=True,
+        )
+        st.markdown(profile.get("charged_sections", "N/A"))
+
+    with tab_best:
+        st.markdown(
+            f"""<div style="font-size:0.78rem;font-weight:600;color:#34d399;text-transform:uppercase;
+                letter-spacing:0.06em;margin-bottom:0.6rem;">🛡️ Strongest Supporting Section</div>""",
+            unsafe_allow_html=True,
+        )
+        st.markdown(profile.get("primary_defense", "N/A"))
+
+    with tab_hier:
+        st.markdown(
+            f"""<div style="font-size:0.78rem;font-weight:600;color:#60a5fa;text-transform:uppercase;
+                letter-spacing:0.06em;margin-bottom:0.6rem;">📊 Hierarchy in Decreasing Order of Strength</div>""",
+            unsafe_allow_html=True,
+        )
+        st.markdown(profile.get("defense_hierarchy", "N/A"))
+
+    with tab_proc:
+        st.markdown(
+            f"""<div style="font-size:0.78rem;font-weight:600;color:#c084fc;text-transform:uppercase;
+                letter-spacing:0.06em;margin-bottom:0.6rem;">⚖️ Procedural &amp; Appellate Remedies</div>""",
+            unsafe_allow_html=True,
+        )
+        st.markdown(profile.get("procedural_strategy", "N/A"))
+
+    with tab_sum:
+        st.markdown(
+            f"""<div style="font-size:0.78rem;font-weight:600;color:#facc15;text-transform:uppercase;
+                letter-spacing:0.06em;margin-bottom:0.6rem;">📋 Executive Counsel Summary</div>""",
+            unsafe_allow_html=True,
+        )
+        st.markdown(
+            f"""<div style="background: rgba(234,179,8,0.08); border-left: 3px solid #facc15;
+                        padding: 1rem 1.25rem; border-radius: 8px; font-size: 0.95rem; line-height: 1.7;">
+                {profile.get('summary', 'N/A')}
+            </div>""",
+            unsafe_allow_html=True,
+        )
+
+    # Reset button
+    if st.button("↩️ Formulate Defense for a Different Case or Section", key="btn_reset_legal"):
+        st.session_state.legal_defense_profile = None
+        st.session_state.legal_analysis_mode = None
+        st.session_state.legal_target_section = ""
+        st.session_state.legal_situation_text = ""
         st.rerun()
 
 
@@ -1189,6 +1702,16 @@ def main():
             "📊 Benchmark Analytics",
             "🏗️ System Architecture",
         ]
+    elif case_study == "Legal Court Case Analysis":
+        pages = [
+            "⚖️ Legal Defense Strategy",
+            "💬 Chat & QA",
+            "📄 Document Overview",
+            "🔎 Retrieval Analysis",
+            "🧹 Contamination Shield",
+            "📊 Benchmark Analytics",
+            "🏗️ System Architecture",
+        ]
     else:
         pages = [
             "💬 Chat & QA",
@@ -1203,6 +1726,8 @@ def main():
 
     if page == "💊 Medicine Profile":
         render_medicine_profile()
+    elif page == "⚖️ Legal Defense Strategy":
+        render_legal_defense()
     elif page == "💬 Chat & QA":
         render_chat(case_study)
     elif page == "📄 Document Overview":

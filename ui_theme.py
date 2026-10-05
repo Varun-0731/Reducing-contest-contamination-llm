@@ -82,33 +82,53 @@ CUSTOM_CSS = """
     box-shadow: 0 10px 36px rgba(0, 0, 0, 0.8);
 }
 
-/* Reduce Streamlit top padding so header sits cleanly at the top */
-[data-testid="stMainBlockContainer"],
-.block-container {
-    padding-top: 0.85rem !important;
-    padding-bottom: 3rem !important;
+/* Streamlit Header & Toolbar Styling */
+[data-testid="stDecoration"] {
+    display: none !important;
 }
 
 header[data-testid="stHeader"] {
-    background: transparent !important;
-    height: 1.5rem !important;
+    background: #0a0a0a !important;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.08) !important;
+    height: 2.75rem !important;
     z-index: 1000 !important;
 }
 
-/* Hero Header Component - Static and Sticky at Dashboard Top */
+[data-testid="stToolbar"] {
+    right: 1.5rem !important;
+    top: 0.25rem !important;
+}
+
+/* Proper top clearance so toolbar (Fork/GitHub) never overlaps the hero card */
+[data-testid="stMainBlockContainer"],
+.block-container {
+    padding-top: 3.75rem !important;
+    padding-bottom: 3.5rem !important;
+}
+
+/* Make Hero Header Static & Sticky at the Top across the entire scroll */
+div[data-testid="element-container"]:has(.hero-container),
+div[data-testid="stVerticalBlock"] > div:has(.hero-container) {
+    position: sticky !important;
+    top: 2.75rem !important;
+    z-index: 995 !important;
+    margin-bottom: 1.25rem !important;
+    background: transparent !important;
+}
+
 .hero-container {
-    position: sticky;
-    top: 0.5rem;
-    z-index: 990;
-    background: rgba(16, 16, 16, 0.95);
-    backdrop-filter: var(--glass-blur);
-    -webkit-backdrop-filter: var(--glass-blur);
-    border: 1px solid rgba(255, 255, 255, 0.14);
-    border-radius: 12px;
-    padding: 1.25rem 1.75rem;
-    margin-bottom: 1.5rem;
-    overflow: hidden;
-    box-shadow: 0 12px 36px rgba(0, 0, 0, 0.75);
+    position: sticky !important;
+    top: 2.75rem !important;
+    z-index: 995 !important;
+    background: rgba(14, 14, 14, 0.97) !important;
+    backdrop-filter: blur(16px) !important;
+    -webkit-backdrop-filter: blur(16px) !important;
+    border: 1px solid rgba(255, 255, 255, 0.14) !important;
+    border-radius: 12px !important;
+    padding: 1.15rem 1.6rem !important;
+    margin-bottom: 0 !important;
+    overflow: hidden !important;
+    box-shadow: 0 12px 36px rgba(0, 0, 0, 0.8) !important;
 }
 .hero-container::before {
     content: '';
@@ -128,10 +148,10 @@ header[data-testid="stHeader"] {
     display: inline-block;
 }
 .hero-subtitle {
-    font-size: 0.9rem;
+    font-size: 0.88rem;
     color: var(--text-secondary);
     margin-top: 0.35rem;
-    margin-bottom: 0.85rem;
+    margin-bottom: 0.75rem;
     line-height: 1.45;
 }
 .hero-badges-row {

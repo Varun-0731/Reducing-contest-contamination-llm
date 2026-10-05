@@ -202,6 +202,25 @@ def generate_mechanism_and_cure(medicine_name: str, evidence: str) -> str:
     return _call_llm(prompt)
 
 
+def generate_clinical_summary(medicine_name: str, evidence: str) -> str:
+    prompt = (
+        f"You are a licensed pharmacist and clinical expert.\n\n"
+        f"The medicine being analyzed is: {medicine_name}\n\n"
+        f"Document evidence:\n{evidence}\n\n"
+        f"Task:\n"
+        f"Provide a SINGLE, SIMPLE, CONCISE summary paragraph for {medicine_name}.\n"
+        f"In one cohesive paragraph (3 to 5 sentences), summarize:\n"
+        f"- What {medicine_name} is primarily used for and how it helps the patient,\n"
+        f"- The key benefits or clinical outcome,\n"
+        f"- The most important side effects, safety warnings, or precautions to remember.\n\n"
+        f"Rules:\n"
+        f"- Strictly output as ONE clear, readable paragraph. No bullet points or headers in this summary section.\n"
+        f"- Use patient-friendly yet clinically precise language.\n\n"
+        f"Clinical summary:"
+    )
+    return _call_llm(prompt)
+
+
 # --------------------------------------------------
 # Full medicine profile builder
 # --------------------------------------------------
@@ -224,7 +243,7 @@ def _extract_name_from_question(question: str) -> str:
 def build_medicine_profile(question: str, result: dict) -> dict:
     """
     Given a RAG result, build a complete medicine information profile.
-    Returns a dict with: medicine_name, alternatives, side_effects, use_cases, mechanism
+    Returns a dict with: medicine_name, alternatives, side_effects, use_cases, mechanism, summary
     """
     evidence = _evidence_text(result)
     medicine_name = _extract_name_from_question(question)
@@ -239,6 +258,7 @@ def build_medicine_profile(question: str, result: dict) -> dict:
         "side_effects": generate_side_effects(medicine_name, evidence),
         "use_cases": generate_use_cases(medicine_name, evidence),
         "mechanism": generate_mechanism_and_cure(medicine_name, evidence),
+        "summary": generate_clinical_summary(medicine_name, evidence),
     }
 
 
@@ -251,7 +271,7 @@ def stream_medicine_profile(medicine_name: str = None, evidence: str = None):
     Generator that produces medicine analysis step-by-step.
     Yields each section immediately as soon as it is generated,
     allowing the UI to display each card progressively without
-    making the user wait for all 4 sections at once.
+    making the user wait for all sections at once.
     """
     info = rag.get_current_pdf_info()
     pdf_name = info.get("pdf_name", "Uploaded PDF")
@@ -276,7 +296,7 @@ def stream_medicine_profile(medicine_name: str = None, evidence: str = None):
         "type": "metadata",
         "medicine_name": medicine_name,
         "pdf_name": pdf_name,
-        "total": 4,
+        "total": 5,
     }
 
     # 2. Sequential sections list
@@ -285,6 +305,7 @@ def stream_medicine_profile(medicine_name: str = None, evidence: str = None):
         ("side_effects", "Side Effects & Contraindications", "⚠️", generate_side_effects),
         ("use_cases", "Use Cases & Indications", "✅", generate_use_cases),
         ("mechanism", "Mechanism & How It Cures", "🧬", generate_mechanism_and_cure),
+        ("summary", "Clinical Summary & Takeaway", "📋", generate_clinical_summary),
     ]
 
     total = len(sections)
