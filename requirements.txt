@@ -3,6 +3,7 @@ faiss-cpu
 sentence-transformers
 transformers
 torch
+torchvision
 numpy
 
 # PDF parsing
