@@ -73,9 +73,21 @@ EMBEDDING_MODEL = "BAAI/bge-small-en-v1.5"
 # NVIDIA NIM MODEL CONFIGURATION
 # ============================================================
 
-NVIDIA_MODEL = os.getenv("NVIDIA_MODEL", "meta/llama-3.2-11b-vision-instruct")
-NVIDIA_BASE_URL = os.getenv("NVIDIA_BASE_URL", "https://integrate.api.nvidia.com/v1")
-FAST_MODE = os.getenv("FAST_MODE", "true").lower() in ("true", "1", "yes")
+def _get_config_val(key, default=None):
+    val = os.getenv(key)
+    if val:
+        return val
+    try:
+        import streamlit as st
+        if key in st.secrets:
+            return st.secrets[key]
+    except Exception:
+        pass
+    return default
+
+NVIDIA_MODEL = _get_config_val("NVIDIA_MODEL", "meta/llama-3.2-11b-vision-instruct")
+NVIDIA_BASE_URL = _get_config_val("NVIDIA_BASE_URL", "https://integrate.api.nvidia.com/v1")
+FAST_MODE = str(_get_config_val("FAST_MODE", "true")).lower() in ("true", "1", "yes")
 
 
 # ============================================================
@@ -146,13 +158,13 @@ CURRENT_CASE_STUDY = "General PDF QA"
 # NVIDIA NIM CLIENT
 # ============================================================
 
-API_KEY = os.getenv("NVIDIA_API_KEY")
+API_KEY = _get_config_val("NVIDIA_API_KEY")
 
 if not API_KEY:
     raise RuntimeError(
         "NVIDIA_API_KEY is not set.\n\n"
-        "Set it in your .env file or shell:\n"
-        'export NVIDIA_API_KEY="YOUR_API_KEY"'
+        "Set it in your .env file, environment, or Streamlit Cloud Secrets:\n"
+        'NVIDIA_API_KEY = "your_key"'
     )
 
 client = OpenAI(base_url=NVIDIA_BASE_URL, api_key=API_KEY)
