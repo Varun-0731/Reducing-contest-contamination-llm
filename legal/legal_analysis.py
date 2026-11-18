@@ -121,7 +121,7 @@ def generate_legal_analysis(question, result):
     if not evidence:
         return "The requested legal information is not available in the provided document."
 
-    answer = rag.call_gemini(
+    answer = rag.call_nim(
         build_legal_prompt(question, evidence)
     )
 
@@ -167,7 +167,7 @@ Return:
 - material facts/allegations
 - documented judgment/sentence/punishment, if present
 """
-    answer = rag.call_gemini(prompt)
+    answer = rag.call_nim(prompt)
     return {
         "pdf_name": info["pdf_name"],
         "summary": rag.clean_answer(answer or ""),

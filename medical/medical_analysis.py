@@ -117,7 +117,7 @@ def generate_medical_analysis(question, result):
         return "The requested medical information is not available in the provided report."
 
     prompt = build_medical_prompt(question, evidence)
-    answer = rag.call_gemini(prompt)
+    answer = rag.call_nim(prompt)
 
     if answer:
         return rag.clean_answer(answer)
@@ -161,7 +161,7 @@ Return a concise summary covering:
 - documented diagnosis/findings
 - documented precautions/recommendations
 """
-    answer = rag.call_gemini(prompt)
+    answer = rag.call_nim(prompt)
     return {
         "pdf_name": info["pdf_name"],
         "summary": rag.clean_answer(answer or ""),

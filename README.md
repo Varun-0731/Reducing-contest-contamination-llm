@@ -2,7 +2,7 @@
 
 An advanced Retrieval-Augmented Generation (RAG) system engineered to mitigate **context contamination**, prevent hallucinations, and optimize evidence-grounded answers across diverse document domains including **General QA**, **Medical Reports**, and **Legal Case Studies**.
 
-Powered by **FAISS**, **BGE Embeddings**, **LangChain**, and **NVIDIA NIM** (Llama 3.2).
+Powered by **FAISS**, **BGE Embeddings**, **LangChain**, and **NVIDIA NIM** (MiniMax M3.1).
 
 ---
 
@@ -45,7 +45,7 @@ flowchart TD
     G --> H[Adaptive Contamination Filter]
     H -->|Noisy Chunks Removed| I[Kept Evidence Context]
     
-    I --> J[NVIDIA NIM Llama 3.2 Instruct]
+    I --> J[NVIDIA NIM MiniMax M3.1 Flash]
     J --> K[Grounded Final Answer]
     
     G -.-> L[Contaminated Baseline Answer]
@@ -87,7 +87,7 @@ cp .env.example .env
 Edit `.env` and insert your NVIDIA API key:
 ```env
 NVIDIA_API_KEY=nvapi-your_api_key_here
-NVIDIA_MODEL=meta/llama-3.2-11b-vision-instruct
+NVIDIA_MODEL=minimaxai/minimax-m3.1-flash
 FAST_MODE=true
 ```
 
