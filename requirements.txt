@@ -3,7 +3,6 @@ faiss-cpu
 sentence-transformers
 transformers
 torch
-torchvision
 numpy
 
 # PDF parsing
@@ -21,5 +20,3 @@ pandas
 
 # Ingestion (chunker.py)
 langchain-text-splitters
-
-torchvision
