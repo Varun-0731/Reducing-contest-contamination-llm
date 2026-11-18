@@ -1,65 +1,64 @@
-# 📚 PDF RAG Intelligence System: Reducing Context Contamination in LLM Retrieval
+# PDF RAG Intelligence System: Reducing Context Contamination in LLM Retrieval
 
-An advanced Retrieval-Augmented Generation (RAG) system engineered to mitigate **context contamination**, prevent hallucinations, and optimize evidence-grounded answers across diverse document domains including **General QA**, **Medical Reports**, and **Legal Case Studies**.
+An advanced Retrieval-Augmented Generation (RAG) system engineered to mitigate **context contamination**, eliminate hallucinations, and deliver evidence-grounded answers across diverse document domains including **General QA**, **Medicine Profiles**, and **Legal Defense Strategy**.
 
-Powered by **FAISS**, **BGE Embeddings**, **LangChain**, and **NVIDIA NIM** (MiniMax M3.1).
+Powered by **FAISS**, **BAAI/bge-small-en-v1.5 Embeddings**, PyMuPDF, and **NVIDIA NIM** (MiniMax M3.1 Flash).
 
 ---
 
-## 🌟 Key Features
+## Key Features
 
 - **Adaptive Context Contamination Filtering**:
-  Intelligently filters out noisy, weak, and redundant chunks from retrieval pools using semantic relevance thresholds and lexical protection—preventing distraction and hallucination in LLM answers.
+  Intelligently filters out noisy, weak, and redundant chunks from retrieval pools using semantic relevance thresholds, lexical protection, and glossary/index shielding—preventing distraction and hallucinations in LLM generation.
 - **Multi-Domain Intelligence**:
-  Unified architecture with specialized post-processing and formatting for:
-  - 📄 **General PDF QA**: Technical whitepapers, research articles, manuals, resumes.
-  - 🩺 **Medical Report Analysis**: Clinical findings, diagnostic summaries, and medical disclaimers.
-  - ⚖️ **Legal Court Case Analysis**: Case ratio decidendi, statutory citations, and legal holdings.
+  Unified architecture with specialized domain intelligence layers:
+  - **General PDF QA**: Technical whitepapers, research articles, manuals, resumes.
+  - **Medical Report & Medicine Profile**: Clinical findings, indications, contraindications, and drug profile analysis.
+  - **Legal Defense Strategy**: Statutory section analysis, procedural defense strategies, and case fact extraction.
 - **Comprehensive Evaluation Benchmark**:
-  Real-time before/after filtering metrics comparing:
+  Real-time before-and-after filtering metrics comparing:
   - **Contamination Reduction Rate (%)**
   - **Semantic Overlap & Accuracy** (Precision, Recall, F1)
   - **Generation Metrics**: BLEU score & ROUGE (ROUGE-1, ROUGE-2, ROUGE-L)
   - **Perplexity Scoring** via Causal LM
-- **⚡ Fast Mode**:
-  Streamlined execution path completing retrieval, adaptive filtering, generation, and verification in **5–8 seconds**.
-- **Dual User Interface**:
-  - 🖥️ **Streamlit Web UI**: Interactive dashboard with contamination visualizer and metrics tables.
-  - 💻 **Terminal CLI Mode**: Headless command-line interface with interactive PDF switching.
+- **Fast Mode**:
+  Streamlined execution path completing retrieval, adaptive filtering, and decontaminated generation in **3–7 seconds**.
+- **Interactive Web Interface**:
+  Built with Streamlit, providing real-time evidence diff visualization, KPI metrics cards, and document analysis tabs.
 
 ---
 
-## 🏗️ System Architecture
+## System Architecture
 
 ```mermaid
 flowchart TD
     A[PDF Upload] --> B[PyMuPDF Text Extraction]
-    B --> C[Recursive Character Chunking]
+    B --> C[Dynamic Sliding-Window Chunking]
     C --> D[BAAI/bge-small-en-v1.5 Embeddings]
     D --> E[FAISS Vector Index]
     
-    Q[User Question] --> F[Vector Similarity Search Top-K]
+    Q[User Question] --> F[Vector & Keyword Search Top-K]
     E --> F
     F --> G[Raw Retrieved Evidence Pool]
     
     G --> H[Adaptive Contamination Filter]
-    H -->|Noisy Chunks Removed| I[Kept Evidence Context]
+    H -->|Noisy / Index Chunks Filtered| I[Clean Evidence Context]
     
     I --> J[NVIDIA NIM MiniMax M3.1 Flash]
-    J --> K[Grounded Final Answer]
+    J --> K[Decontaminated Bullet-Point Response]
     
-    G -.-> L[Contaminated Baseline Answer]
+    G -.-> L[Raw Baseline Comparison]
     I --> M[Metric Evaluation & Grounding Verification]
     K --> M
 ```
 
 ---
 
-## 🚀 Quick Start Guide
+## Quick Start Guide
 
 ### Prerequisites
 - Python 3.10+ (macOS, Linux, or Windows)
-- An NVIDIA NIM API key (get one free at [NVIDIA API Catalog](https://build.nvidia.com/explore/discover))
+- An NVIDIA NIM API key (available at [NVIDIA API Catalog](https://build.nvidia.com/explore/discover))
 
 ### 1. Clone the Repository
 ```bash
@@ -69,8 +68,13 @@ cd Reducing-contest-contamination-llm
 
 ### 2. Set Up Virtual Environment
 ```bash
+# On Linux / macOS:
 python3 -m venv .venv
-source .venv/bin/activate    # On Windows: .venv\Scripts\activate
+source .venv/bin/activate
+
+# On Windows (PowerShell):
+python -m venv .venv
+.venv\Scripts\Activate.ps1
 ```
 
 ### 3. Install Dependencies
@@ -80,69 +84,77 @@ pip install -r requirements.txt
 ```
 
 ### 4. Configure Environment Variables
-Copy the example `.env.example` file to `.env`:
+Copy `.env.example` to `.env`:
 ```bash
 cp .env.example .env
 ```
-Edit `.env` and insert your NVIDIA API key:
+Edit `.env` and set your configuration:
 ```env
 NVIDIA_API_KEY=nvapi-your_api_key_here
 NVIDIA_MODEL=minimaxai/minimax-m3.1-flash
+NVIDIA_BASE_URL=https://integrate.api.nvidia.com/v1
 FAST_MODE=true
 ```
 
 ---
 
-## 💻 Running the Application
+## Running the Application
 
-### Option A: Streamlit Web UI (Recommended)
+### Streamlit Web UI
 Launch the interactive web application:
 ```bash
 streamlit run app.py
 ```
 Open **[http://localhost:8501](http://localhost:8501)** in your browser.
-1. Select a **Case Study** (General, Medical, or Legal) from the sidebar.
-2. Upload any PDF file.
-3. Ask questions and inspect the **Retrieval Analysis** and **Contamination Analysis** tabs to observe filtered noise reduction in real time.
-
-### Option B: Interactive Terminal CLI
-Run in terminal mode:
-```bash
-python retrieval/retrieval_pipeline.py
-```
-- Available commands during the session:
-  - `pdf`: Select a new case study and import a different PDF.
-  - `metrics`: View cumulative evaluation scores across answered questions.
-  - `rebuild`: Re-evaluate and update all metrics in `evaluation.csv`.
-  - `exit`: Quit the terminal session.
+1. Select a **Case Study** (General PDF QA, Medical Report Analysis, or Legal Court Case Analysis) from the sidebar.
+2. Upload any PDF file or use the pre-loaded benchmark document.
+3. Ask questions in the chat or navigate tabs to view **Document Overview**, **Medicine Profile**, **Legal Defense Strategy**, and **Contamination Analysis**.
 
 ---
 
-## 📁 Project Structure
+## Streamlit Cloud Deployment
+
+When deploying to [Streamlit Community Cloud](https://share.streamlit.io):
+1. **Repository:** `Varun-0731/Reducing-contest-contamination-llm`
+2. **Main file path:** `app.py`
+3. Under **App Settings -> Secrets**, add:
+   ```toml
+   NVIDIA_API_KEY = "nvapi-your_actual_api_key_here"
+   NVIDIA_MODEL = "minimaxai/minimax-m3.1-flash"
+   NVIDIA_BASE_URL = "https://integrate.api.nvidia.com/v1"
+   FAST_MODE = "true"
+   ```
+
+---
+
+## Project Structure
 
 ```text
 Reducing-contest-contamination-llm/
-├── app.py                         # Streamlit Web Application & Dashboard
+├── app.py                         # Streamlit Web Application & Multi-Tab Dashboard
+├── ui_theme.py                    # Custom UI layout, KPI cards, and styling components
 ├── requirements.txt               # Direct package dependencies
 ├── .env.example                   # Environment configuration template
-├── .gitignore                     # Git ignore rules (secrets & temp data protected)
+├── .gitignore                     # Git ignore rules (protects keys, cache, and venv)
 ├── evaluation.csv                 # Persistent evaluation metrics log
 ├── data/
-│   └── pdfs/                      # Sample benchmark PDFs
-├── ingestion/
-│   ├── chunker.py                 # PDF parsing & text chunking utilities
-│   └── pdf_ingestion.py           # Document loader pipeline
+│   └── pdfs/                      # Benchmark PDFs (Legal, Medical, and RAG)
 ├── retrieval/
-│   └── retrieval_pipeline.py      # Core RAG, FAISS search, filtering & NIM client
+│   └── retrieval_pipeline.py      # Core RAG engine, FAISS search, contamination filter & NIM client
 ├── medical/
-│   └── medical_analysis.py        # Clinical report formatting layer
-└── legal/
-    └── legal_analysis.py          # Legal case analysis formatting layer
+│   ├── medical_analysis.py        # Clinical report QA handler
+│   └── medicine_analyzer.py       # Detailed medicine profile & drug interaction analyzer
+├── legal/
+│   └── legal_analysis.py          # Legal court case analyzer & statutory defense generator
+└── vectorstore/
+    ├── faiss_index.bin            # Default pre-computed FAISS index
+    ├── chunks.pkl                 # Default pre-computed chunk metadata
+    └── cache/                     # Dynamic per-PDF vector cache
 ```
 
 ---
 
-## 📊 Evaluation & Metrics
+## Evaluation & Metrics
 
 The system records every evaluation into `evaluation.csv` for reproducibility:
 
@@ -156,18 +168,6 @@ The system records every evaluation into `evaluation.csv` for reproducibility:
 
 ---
 
-## 🤝 Contributing
-
-Contributions, issues, and feature requests are welcome!
-
-1. Fork the Project
-2. Create your Feature Branch (`git checkout -b feature/AmazingFeature`)
-3. Commit your Changes (`git commit -m 'Add some AmazingFeature'`)
-4. Push to the Branch (`git push origin feature/AmazingFeature`)
-5. Open a Pull Request
-
----
-
-## 📜 License
+## License
 
 Distributed under the MIT License. See `LICENSE` for more information.
