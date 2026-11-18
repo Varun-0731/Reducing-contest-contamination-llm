@@ -18,5 +18,3 @@ python-dotenv
 streamlit
 pandas
 
-# Ingestion (chunker.py)
-langchain-text-splitters
