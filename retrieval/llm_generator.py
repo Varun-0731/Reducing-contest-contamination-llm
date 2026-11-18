@@ -84,23 +84,33 @@ ANSWER:
             "Do NOT generate internal thoughts, reasoning steps, monologue, or thinking tags. "
             "Provide ONLY the direct, final, factual answer immediately."
         )
-        response = client.chat.completions.create(
-            model=NVIDIA_MODEL,
-            messages=[
-                {"role": "system", "content": system_content},
-                {"role": "user", "content": prompt}
-            ],
-            temperature=0.1,
-            max_tokens=1536,
-        )
 
-        if response and response.choices:
-            answer = response.choices[0].message.content
-            if answer:
-                answer = answer.strip()
-                if answer.lower().startswith("answer:"):
-                    answer = answer[7:].strip()
-                return answer
+        models_to_try = [NVIDIA_MODEL]
+        if NVIDIA_MODEL != "meta/llama-3.1-8b-instruct":
+            models_to_try.append("meta/llama-3.1-8b-instruct")
+
+        for model_name in models_to_try:
+            try:
+                response = client.chat.completions.create(
+                    model=model_name,
+                    messages=[
+                        {"role": "system", "content": system_content},
+                        {"role": "user", "content": prompt}
+                    ],
+                    temperature=0.1,
+                    max_tokens=600,
+                    timeout=7.0,
+                )
+
+                if response and response.choices:
+                    answer = response.choices[0].message.content
+                    if answer:
+                        answer = answer.strip()
+                        if answer.lower().startswith("answer:"):
+                            answer = answer[7:].strip()
+                        return answer
+            except Exception as e:
+                print(f"Error on {model_name}: {e}")
 
         return "The answer is not available in the document."
 

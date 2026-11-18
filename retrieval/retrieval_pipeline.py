@@ -2743,9 +2743,9 @@ def retrieve_evidence(
 
 def call_nim(
     prompt,
-    retries=2
+    retries=1
 ):
-    """Call NVIDIA NIM API with strict direct QA instructions and anti-monologue guard."""
+    """Call NVIDIA NIM API with strict timeout, fast fallback, and direct bullet-point output."""
 
     if not prompt:
         return None
@@ -2759,53 +2759,35 @@ def call_nim(
         "Provide ONLY the direct, final, factual answer immediately."
     )
 
-    for attempt in range(retries):
+    # Models to try in order: preferred model first, then ultra-fast TensorRT Llama 3.1 8B fallback
+    models_to_try = [NVIDIA_MODEL]
+    if NVIDIA_MODEL != "meta/llama-3.1-8b-instruct":
+        models_to_try.append("meta/llama-3.1-8b-instruct")
 
+    for model_name in models_to_try:
         try:
-
-            print(
-                f"NVIDIA NIM request "
-                f"{attempt + 1}/{retries} "
-                f"using {NVIDIA_MODEL}..."
-            )
-
+            print(f"NVIDIA NIM request using {model_name} (timeout=7s)...")
             response = client.chat.completions.create(
-                model=NVIDIA_MODEL,
+                model=model_name,
                 messages=[
                     {"role": "system", "content": system_message},
                     {"role": "user", "content": prompt}
                 ],
                 temperature=0.1,
-                max_tokens=1536,
+                max_tokens=600,
+                timeout=7.0,
             )
 
             text = extract_llm_text(response)
-
             if text:
-                print(
-                    f"NVIDIA NIM response received "
-                    f"from {NVIDIA_MODEL}."
-                )
+                print(f"NVIDIA NIM response received from {model_name}.")
                 return text
 
-            print("NVIDIA NIM returned an empty response.")
+            print(f"NVIDIA NIM returned empty response from {model_name}.")
 
         except Exception as e:
-
             last_error = e
-            error_text = str(e)
-
-            print()
-            print("NVIDIA NIM ERROR")
-            print(error_text)
-
-        if attempt < retries - 1:
-
-            print("Retrying NVIDIA NIM...")
-            time.sleep(2)
-
-    print()
-    print("NVIDIA NIM failed after all attempts.")
+            print(f"NVIDIA NIM error on {model_name}: {e}")
 
     if last_error:
         print("Last error:", str(last_error))
@@ -3419,7 +3401,7 @@ def generate_answer(
         return None
 
     # Focus context on top relevant chunks to prevent latency & distraction
-    max_ev = 5 if FAST_MODE else 10
+    max_ev = 3 if FAST_MODE else 6
     if len(evidence) > max_ev:
         evidence = evidence[:max_ev]
 
@@ -3428,6 +3410,9 @@ def generate_answer(
             evidence
         )
     )
+
+    if evidence_text and len(evidence_text) > 2200:
+        evidence_text = evidence_text[:2200]
 
     if not evidence_text:
 
