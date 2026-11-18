@@ -54,9 +54,15 @@ SUGGESTED_PROMPTS = {
 
 
 def get_model_display_name():
-    model = getattr(rag, "NVIDIA_MODEL", "") or "minimaxai/minimax-m3.1-flash"
+    model = (
+        st.session_state.get("selected_model")
+        or getattr(rag, "NVIDIA_MODEL", "")
+        or "minimaxai/minimax-m3.1-flash"
+    )
     if "minimax" in model.lower():
         return "NVIDIA NIM MiniMax M3.1"
+    if "glm" in model.lower():
+        return "NVIDIA NIM GLM 5.3 Flash"
     if "nemotron" in model.lower():
         return "NVIDIA NIM Nemotron 3.5"
     if "llama" in model.lower():
@@ -78,6 +84,10 @@ def init_state():
         "legal_analysis_mode": None,    # None | 'full' | 'specific' | 'situation'
         "legal_target_section": "",     # section/charge when mode is 'specific'
         "legal_situation_text": "",     # scenario text when mode is 'situation'
+        "selected_model": getattr(rag, "NVIDIA_MODEL", "minimaxai/minimax-m3.1-flash"),
+        "model_temperature": 0.1,
+        "model_max_tokens": 650,
+        "shield_strictness": "Standard (Adaptive)",
     }
     for key, value in defaults.items():
         if key not in st.session_state:
@@ -280,6 +290,59 @@ def render_sidebar():
         st.session_state.chat_history = []
         st.session_state.last_result = None
         st.rerun()
+
+    with st.sidebar.expander("⚙️ Model & Shield Settings", expanded=False):
+        model_options = [
+            "minimaxai/minimax-m3.1-flash",
+            "z-ai/glm-5.3-flash",
+            "nvidia/nemotron-3.5-lightning-30b-a3b",
+            "Custom Model ID...",
+        ]
+        curr_model = st.session_state.selected_model
+        curr_idx = model_options.index(curr_model) if curr_model in model_options else 3
+
+        chosen_option = st.selectbox(
+            "NVIDIA NIM Model",
+            model_options,
+            index=curr_idx,
+            help="Select the foundation model powering the decontaminated generation."
+        )
+        if chosen_option == "Custom Model ID...":
+            custom_id = st.text_input(
+                "Custom Model ID",
+                value=curr_model if curr_model not in model_options[:3] else "",
+                placeholder="e.g. meta/llama-3.3-70b-instruct"
+            )
+            if custom_id.strip():
+                st.session_state.selected_model = custom_id.strip()
+        else:
+            st.session_state.selected_model = chosen_option
+
+        st.session_state.model_temperature = st.slider(
+            "Temperature",
+            min_value=0.0,
+            max_value=1.0,
+            value=float(st.session_state.model_temperature),
+            step=0.05,
+            help="Lower values yield strictly deterministic factual answers."
+        )
+
+        st.session_state.model_max_tokens = st.slider(
+            "Max Tokens",
+            min_value=256,
+            max_value=1536,
+            value=int(st.session_state.model_max_tokens),
+            step=64,
+            help="Token budget for generated answers."
+        )
+
+        shield_modes = ["Standard (Adaptive)", "Strict (High Precision)", "Relaxed (Broad Context)"]
+        st.session_state.shield_strictness = st.select_slider(
+            "Shield Strictness",
+            options=shield_modes,
+            value=st.session_state.shield_strictness,
+            help="Controls threshold for pruning noisy or redundant context."
+        )
 
     st.sidebar.divider()
 

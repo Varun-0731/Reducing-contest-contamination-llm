@@ -2783,17 +2783,21 @@ def call_nim(
         "Provide ONLY the direct, final, factual answer immediately."
     )
 
+    active_model = getattr(st.session_state, "selected_model", NVIDIA_MODEL) if (hasattr(st, "session_state") and "selected_model" in st.session_state) else NVIDIA_MODEL
+    temp = float(getattr(st.session_state, "model_temperature", 0.1)) if (hasattr(st, "session_state") and "model_temperature" in st.session_state) else 0.1
+    max_toks = int(getattr(st.session_state, "model_max_tokens", 650)) if (hasattr(st, "session_state") and "model_max_tokens" in st.session_state) else 650
+
     for attempt in range(retries):
         try:
-            print(f"NVIDIA NIM streaming request {attempt + 1}/{retries} using {NVIDIA_MODEL}...")
+            print(f"NVIDIA NIM streaming request {attempt + 1}/{retries} using {active_model} (temp={temp}, max_tokens={max_toks})...")
             response = client.chat.completions.create(
-                model=NVIDIA_MODEL,
+                model=active_model,
                 messages=[
                     {"role": "system", "content": system_message},
                     {"role": "user", "content": prompt}
                 ],
-                temperature=0.1,
-                max_tokens=650,
+                temperature=temp,
+                max_tokens=max_toks,
                 stream=True,
                 timeout=25.0,
             )
@@ -2807,14 +2811,14 @@ def call_nim(
 
             text = "".join(collected).strip()
             if text:
-                print(f"NVIDIA NIM response received from {NVIDIA_MODEL}.")
+                print(f"NVIDIA NIM response received from {active_model}.")
                 return text
 
-            print(f"NVIDIA NIM returned empty response from {NVIDIA_MODEL}.")
+            print(f"NVIDIA NIM returned empty response from {active_model}.")
 
         except Exception as e:
             last_error = e
-            print(f"NVIDIA NIM error on {NVIDIA_MODEL} (attempt {attempt + 1}): {e}")
+            print(f"NVIDIA NIM error on {active_model} (attempt {attempt + 1}): {e}")
             if attempt < retries - 1:
                 time.sleep(1)
 
@@ -3281,7 +3285,7 @@ def _evidence_preserving_filter(question, question_type, evidence,
 
 def filter_contaminated_context(question, evidence, baseline_answer=None, variant=0):
     """
-    Universal adaptive context filter.
+    Universal adaptive context filter with UI strictness slider support.
 
     The number of kept chunks is determined by evidence quality, not by a
     fixed percentage or by the number of evaluation samples. Important
@@ -3289,6 +3293,13 @@ def filter_contaminated_context(question, evidence, baseline_answer=None, varian
     """
     if not evidence:
         return []
+
+    # Map interactive UI shield strictness to adaptive filter variant
+    strictness = getattr(st.session_state, "shield_strictness", "Standard (Adaptive)") if (hasattr(st, "session_state") and "shield_strictness" in st.session_state) else "Standard (Adaptive)"
+    if "Strict" in strictness:
+        variant = 1
+    elif "Relaxed" in strictness:
+        variant = 2
 
     total = len(evidence)
     if total <= MIN_FILTER_KEEP:
