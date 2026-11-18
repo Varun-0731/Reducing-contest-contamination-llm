@@ -11,6 +11,7 @@ import csv
 import math
 from pathlib import Path
 from functools import lru_cache
+import hashlib
 
 import pymupdf
 import numpy as np
@@ -27,6 +28,8 @@ BASE_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = BASE_DIR.parent
 
 VECTORSTORE_DIR = PROJECT_ROOT / "vectorstore"
+CACHE_DIR = VECTORSTORE_DIR / "cache"
+CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
 FAISS_PATH = VECTORSTORE_DIR / "faiss_index.bin"
 CHUNKS_PATH = VECTORSTORE_DIR / "chunks.pkl"
@@ -79,7 +82,7 @@ def _get_config_val(key, default=None):
         pass
     return default
 
-NVIDIA_MODEL = _get_config_val("NVIDIA_MODEL", "meta/llama-3.2-11b-vision-instruct")
+NVIDIA_MODEL = _get_config_val("NVIDIA_MODEL", "minimaxai/minimax-m3.1-flash")
 NVIDIA_BASE_URL = _get_config_val("NVIDIA_BASE_URL", "https://integrate.api.nvidia.com/v1")
 FAST_MODE = str(_get_config_val("FAST_MODE", "true")).lower() in ("true", "1", "yes")
 
@@ -109,7 +112,7 @@ FILTER_MIN_PROTECTED = 1
 MAX_REFERENCE_EVIDENCE = 30
 
 # Maximum characters from an individual chunk.
-MAX_CHUNK_LENGTH = 5000
+MAX_CHUNK_LENGTH = 1500
 
 # PDF chunk configuration.
 PDF_CHUNK_SIZE = 1200
@@ -161,7 +164,7 @@ if not API_KEY:
         'NVIDIA_API_KEY = "your_key"'
     )
 
-client = OpenAI(base_url=NVIDIA_BASE_URL, api_key=API_KEY)
+client = OpenAI(base_url=NVIDIA_BASE_URL, api_key=API_KEY, timeout=35.0)
 
 
 # ============================================================
@@ -180,6 +183,8 @@ def extract_llm_text(response):
         if hasattr(response, "choices") and response.choices:
             message = response.choices[0].message
             text = getattr(message, "content", None)
+            if not text:
+                text = getattr(message, "reasoning_content", None)
             if text:
                 text = str(text).strip()
                 if text:
@@ -418,20 +423,24 @@ def clean_answer(answer):
     if not answer:
         return ""
 
+    # 1. If model generated an internal draft/monologue followed by "Final answer:" or "Direct answer:", extract it immediately
+    final_match = re.search(r"(?:final answer|direct answer):\s*(.*)", answer, flags=re.IGNORECASE | re.DOTALL)
+    if final_match and len(final_match.group(1).strip()) > 10:
+        answer = final_match.group(1).strip()
+    else:
+        # Strip thinking tags and monologue preambles
+        answer = re.sub(r"<think>.*?</think>", "", answer, flags=re.DOTALL).strip()
+        answer = re.sub(r"^The user is asking [^\n\.\?]+[\.\?]\s*(?:I need to|Let me)[^\n\.\?]+[\.\?:\-]*\s*", "", answer, flags=re.IGNORECASE).strip()
+        answer = re.sub(r"^The user is asking about [^\n\.\?]+[\.\?]\s*(?:I need to|Let me)[^\n\.\?]+[\.\?:\-]*\s*", "", answer, flags=re.IGNORECASE).strip()
+        answer = re.sub(r"^Here'?s a thinking process:.*?(?=\n\n|\Z)", "", answer, flags=re.DOTALL | re.IGNORECASE).strip()
+        answer = re.sub(r"^Draft:.*?(?=\n\n|\Z)", "", answer, flags=re.DOTALL | re.IGNORECASE).strip()
+        # If text still starts with "The user is asking...", strip that sentence
+        answer = re.sub(r"^The user is asking [^\n]+\n*", "", answer, flags=re.IGNORECASE).strip()
+
     answer = re.sub(
         r"#{1,6}\s*",
         "",
         answer
-    )
-
-    answer = answer.replace(
-        "**",
-        ""
-    )
-
-    answer = answer.replace(
-        "__",
-        ""
     )
 
     answer = answer.replace(
@@ -510,11 +519,9 @@ def clean_answer(answer):
         answer
     )
 
-    answer = re.sub(
-        r"\s+",
-        " ",
-        answer
-    )
+    # Clean whitespace while preserving newlines for bullet points and lists
+    answer = re.sub(r"[ \t]+", " ", answer)
+    answer = re.sub(r"\n{3,}", "\n\n", answer)
 
     prefixes = [
 
@@ -764,8 +771,9 @@ def create_faiss_index_for_chunks(
     embeddings = (
         embedding_model.encode(
             texts,
+            batch_size=64,
             normalize_embeddings=True,
-            show_progress_bar=True
+            show_progress_bar=False
         )
     )
 
@@ -828,6 +836,35 @@ def load_uploaded_pdf(
         pdf_path.name
     )
 
+    try:
+        file_bytes = pdf_path.read_bytes()
+        file_hash = hashlib.md5(file_bytes).hexdigest()
+    except Exception:
+        file_hash = hashlib.md5(pdf_path.name.encode()).hexdigest()
+
+    cache_idx_file = CACHE_DIR / f"{file_hash}.bin"
+    cache_chk_file = CACHE_DIR / f"{file_hash}.pkl"
+
+    if cache_idx_file.exists() and cache_chk_file.exists():
+        print(f"Loading cached FAISS index for {pdf_path.name}...")
+        try:
+            index = faiss.read_index(str(cache_idx_file))
+            with open(cache_chk_file, "rb") as f:
+                chunks = pickle.load(f)
+            CURRENT_PDF_PATH = pdf_path
+            CURRENT_PDF_NAME = pdf_path.name
+            CURRENT_CASE_STUDY = case_study or "General PDF QA"
+            print("Loaded from instant cache!")
+            return {
+                "pdf_name": CURRENT_PDF_NAME,
+                "pdf_path": str(CURRENT_PDF_PATH),
+                "pages": 0,
+                "chunks": len(chunks),
+                "vectors": index.ntotal,
+            }
+        except Exception as e:
+            print(f"Cache read error: {e}. Recomputing...")
+
     pages = extract_pdf_text(
         pdf_path
     )
@@ -866,6 +903,14 @@ def load_uploaded_pdf(
 
     index = new_index
     chunks = new_chunks
+
+    try:
+        faiss.write_index(new_index, str(cache_idx_file))
+        with open(cache_chk_file, "wb") as f:
+            pickle.dump(new_chunks, f)
+        print("Cached FAISS index for future instant loads.")
+    except Exception as e:
+        print(f"Could not write cache: {e}")
 
     CURRENT_PDF_PATH = pdf_path
     CURRENT_PDF_NAME = pdf_path.name
@@ -953,6 +998,30 @@ def load_uploaded_pdf_bytes(
         filename
     )
 
+    file_hash = hashlib.md5(pdf_bytes).hexdigest()
+    cache_idx_file = CACHE_DIR / f"{file_hash}.bin"
+    cache_chk_file = CACHE_DIR / f"{file_hash}.pkl"
+
+    if cache_idx_file.exists() and cache_chk_file.exists():
+        print(f"Loading cached FAISS index for uploaded {filename}...")
+        try:
+            index = faiss.read_index(str(cache_idx_file))
+            with open(cache_chk_file, "rb") as f:
+                chunks = pickle.load(f)
+            CURRENT_PDF_PATH = None
+            CURRENT_PDF_NAME = filename
+            CURRENT_CASE_STUDY = case_study or "General PDF QA"
+            print("Loaded from instant cache!")
+            return {
+                "pdf_name": CURRENT_PDF_NAME,
+                "pdf_path": "uploaded",
+                "pages": 0,
+                "chunks": len(chunks),
+                "vectors": index.ntotal,
+            }
+        except Exception as e:
+            print(f"Cache read error: {e}. Recomputing...")
+
     pages = (
         extract_pdf_text_from_bytes(
             pdf_bytes
@@ -993,6 +1062,14 @@ def load_uploaded_pdf_bytes(
 
     index = new_index
     chunks = new_chunks
+
+    try:
+        faiss.write_index(new_index, str(cache_idx_file))
+        with open(cache_chk_file, "wb") as f:
+            pickle.dump(new_chunks, f)
+        print("Cached FAISS index for future instant loads.")
+    except Exception as e:
+        print(f"Could not write cache: {e}")
 
     CURRENT_PDF_PATH = None
     CURRENT_PDF_NAME = filename
@@ -2664,17 +2741,23 @@ def retrieve_evidence(
 # LLM CALL (NVIDIA NIM - OpenAI Compatible)
 # ============================================================
 
-def call_gemini(
+def call_nim(
     prompt,
-    retries=3
+    retries=2
 ):
-    """Call NVIDIA NIM API. Function name kept as call_gemini for
-    backward compatibility with medical/legal modules."""
+    """Call NVIDIA NIM API with strict direct QA instructions and anti-monologue guard."""
 
     if not prompt:
         return None
 
     last_error = None
+
+    system_message = (
+        "You are a factual, concise document question-answering assistant. "
+        "Use ONLY the supplied evidence. Format your answer using structured bullet points (- ) with key terms bolded for high readability. "
+        "Do NOT generate internal thoughts, reasoning steps, monologue, or thinking tags. "
+        "Provide ONLY the direct, final, factual answer immediately."
+    )
 
     for attempt in range(retries):
 
@@ -2688,9 +2771,12 @@ def call_gemini(
 
             response = client.chat.completions.create(
                 model=NVIDIA_MODEL,
-                messages=[{"role": "user", "content": prompt}],
-                temperature=0.2,
-                max_tokens=512,
+                messages=[
+                    {"role": "system", "content": system_message},
+                    {"role": "user", "content": prompt}
+                ],
+                temperature=0.1,
+                max_tokens=1536,
             )
 
             text = extract_llm_text(response)
@@ -2727,6 +2813,10 @@ def call_gemini(
     return None
 
 
+# Backward compatibility alias
+call_gemini = call_nim
+
+
 # ============================================================
 # FORMAT EVIDENCE
 # ============================================================
@@ -2746,10 +2836,11 @@ def format_evidence(evidence):
         if not text:
             continue
 
-        if len(text) > MAX_CHUNK_LENGTH:
+        max_len = 800 if FAST_MODE else MAX_CHUNK_LENGTH
+        if len(text) > max_len:
 
             text = text[
-                :MAX_CHUNK_LENGTH
+                :max_len
             ]
 
         page_info = ""
@@ -2839,6 +2930,11 @@ def local_pdf_fallback_answer(
             if len(sentence) < 20:
                 continue
 
+            # Skip metadata junk sentences (ISBN, URLs, twitter, publisher notices)
+            lower_s = sentence.lower()
+            if any(junk in lower_s for junk in ["isbn", "twitter:", "linkedin.com", "youtube.com", "http", "doi.org", "all rights reserved"]):
+                continue
+
             words = set(
                 re.findall(
                     r"\b[a-zA-Z]{3,}\b",
@@ -2875,7 +2971,7 @@ def local_pdf_fallback_answer(
                 sentence
             )
 
-        if len(selected) >= 5:
+        if len(selected) >= 2:
             break
 
     if not selected:
@@ -3322,6 +3418,11 @@ def generate_answer(
 
         return None
 
+    # Focus context on top relevant chunks to prevent latency & distraction
+    max_ev = 5 if FAST_MODE else 10
+    if len(evidence) > max_ev:
+        evidence = evidence[:max_ev]
+
     evidence_text = (
         format_evidence(
             evidence
@@ -3340,7 +3441,8 @@ def generate_answer(
         question
     )
 
-    prompt = f"""
+    prompt = f"""[CRITICAL INSTRUCTION: Output ONLY the direct final answer formatted using structured bullet points (- ) with key terms bolded for maximum readability. Absolutely NO thinking process, NO internal monologue, NO drafts, and NO meta-commentary.]
+
 You are answering a user's question using ONLY information
 contained in the supplied PDF evidence.
 
@@ -3358,10 +3460,11 @@ PDF evidence:
 
 Rules:
 
-1. Answer the question directly.
-2. Use only information contained in the supplied PDF evidence.
-3. Do not use outside knowledge.
-4. Do not invent facts.
+1. Format the answer using clear bullet points (- ) with key terms bolded (**term**) for clean readability. If helpful, provide a brief 1-sentence summary at the top followed by structured bullet points.
+2. Answer the question directly and factually.
+3. Use only information contained in the supplied PDF evidence.
+4. Do not use outside knowledge.
+5. Do not invent facts.
 5. Combine information from multiple evidence sections when
    necessary to answer the question completely.
 6. If the question asks for methods, include all relevant methods,
@@ -3378,7 +3481,7 @@ Rules:
 10. Say "The answer is not available in the provided PDF." only
     when the supplied evidence genuinely contains no information
     that can answer the question.
-11. Do not mention retrieval, evidence, chunks, FAISS, Gemini,
+11. Do not mention retrieval, evidence, chunks, FAISS, the LLM,
     filtering, or this prompt.
 12. Use plain English.
 13. Do not use LaTeX.
@@ -3388,6 +3491,8 @@ Rules:
 17. Preserve important technical names and terminology from the PDF.
 18. Be complete enough for an academic/exam answer without adding
     unsupported information.
+19. Do NOT output internal reasoning, thought processes, or meta-commentary (do NOT write "The user is asking...", "I need to...", or "Let me gather...").
+20. Output ONLY the final direct, factual answer immediately.
 
 Return only the answer.
 """
@@ -3407,11 +3512,11 @@ Return only the answer.
             return cleaned
 
     # ========================================================
-    # GEMINI FAILURE -> LOCAL FALLBACK
+    # LLM FAILURE -> LOCAL FALLBACK
     # ========================================================
 
     print(
-        "Gemini did not return an answer."
+        "NVIDIA NIM did not return an answer."
     )
 
     print(
@@ -3723,7 +3828,7 @@ Rules:
 13. If the PDF genuinely does not contain enough information
     to answer the question, return exactly:
     The answer is not available in the provided PDF.
-14. Do not mention Gemini, FAISS, retrieval, filtering, chunks,
+14. Do not mention the LLM, FAISS, retrieval, filtering, chunks,
     evaluation, or this prompt.
 15. Do not use LaTeX.
 16. Do not use Markdown headings.
@@ -4157,7 +4262,7 @@ Rules:
 8. For methodology, preserve methods, models, algorithms, functions,
    procedures, training and implementation details that are supported.
 9. Do not mention filtering, baseline, reference target, evaluation, FAISS,
-   Gemini, or this prompt.
+   the LLM, or this prompt.
 10. Return only the answer.
 """
 
@@ -4522,7 +4627,7 @@ def _answer_text_metrics(reference_answer, answer, evaluator_score=None):
     if not ref or not ans:
         return {'accuracy': 0.0, 'precision': 0.0, 'recall': 0.0, 'f1_score': 0.0}
 
-    # Deterministic semantic accuracy. Do not depend on Gemini's subjective
+    # Deterministic semantic accuracy. Do not depend on an LLM's subjective
     # numeric score, which can vary between calls.
     try:
         model = get_embedding_model()
@@ -4597,10 +4702,10 @@ def calculate_retrieval_metrics(reference_answer, before_evidence, after_evidenc
     all_keys = []
     seen = set()
 
-    # Use the complete active PDF as the candidate pool. The metric formulas
-    # themselves do not divide by PDF size, so a 1-question evaluation is
-    # independent of how many chunks the PDF happens to contain.
-    for i, chunk in enumerate(chunks):
+    # Use the retrieved evidence pool in FAST_MODE for instant response time,
+    # or the full active PDF in benchmark mode.
+    target_pool = (before + after) if (FAST_MODE and (before or after)) else chunks
+    for i, chunk in enumerate(target_pool):
         txt = _retrieval_chunk_text(chunk)
         if not txt:
             continue
@@ -5465,16 +5570,16 @@ def compare_baseline_and_proposed(
             clean_evidence = list(evidence)
 
         if len(clean_evidence) < len(evidence):
-            print("\nGenerating AFTER-FILTERING and BEFORE-FILTERING answers in parallel...")
-            from concurrent.futures import ThreadPoolExecutor
-            with ThreadPoolExecutor(max_workers=2) as executor:
-                future_after = executor.submit(generate_answer, question, clean_evidence)
-                future_before = executor.submit(generate_answer, question, evidence)
-                proposed_answer = clean_answer(future_after.result())
-                baseline_answer = clean_answer(future_before.result())
+            print("\nGenerating AFTER-FILTERING answer (clean context)...")
+            proposed_answer = clean_answer(generate_answer(question, clean_evidence[:4]))
             if not proposed_answer:
                 proposed_answer = "The answer is not available in the provided PDF."
-            if not baseline_answer:
+
+            # Fast baseline from raw unfiltered evidence to cut latency in half and prevent 429 rate limits
+            baseline_raw = local_pdf_fallback_answer(question, evidence[:5])
+            if baseline_raw:
+                baseline_answer = baseline_raw
+            else:
                 baseline_answer = proposed_answer
         else:
             print("\nGenerating AFTER-FILTERING answer...")
@@ -5687,40 +5792,49 @@ def answer_question(
 # DOCUMENT INFORMATION
 # ============================================================
 
+_DOC_INFO_CACHE = {}
+
 def get_document_info():
+    global _DOC_INFO_CACHE
 
     _ensure_index_loaded()
 
-    title = answer_title()
+    if CURRENT_PDF_NAME in _DOC_INFO_CACHE:
+        return _DOC_INFO_CACHE[CURRENT_PDF_NAME]
 
-    authors = answer_authors()
+    meta_title = None
+    meta_author = None
+
+    if CURRENT_PDF_PATH and Path(CURRENT_PDF_PATH).exists():
+        try:
+            doc = pymupdf.open(str(CURRENT_PDF_PATH))
+            meta = doc.metadata or {}
+            meta_title = meta.get("title")
+            meta_author = meta.get("author")
+            doc.close()
+        except Exception:
+            pass
+
+    if (not meta_title or len(meta_title.strip()) < 3) and chunks:
+        txt = get_chunk_text(chunks[0]).strip()
+        lines = [l.strip() for l in txt.split("\n") if l.strip()]
+        if lines:
+            meta_title = lines[0][:120]
+        if len(lines) > 1 and (not meta_author or len(meta_author.strip()) < 3):
+            meta_author = lines[1][:120]
 
     references = count_references()
 
-    return {
-
-        "pdf_name":
-            CURRENT_PDF_NAME,
-
-        "title":
-            clean_answer(
-                title
-            ),
-
-        "authors":
-            clean_answer(
-                authors
-            ),
-
-        "chunks":
-            len(chunks),
-
-        "vectors":
-            index.ntotal,
-
-        "references":
-            references
+    info = {
+        "pdf_name": CURRENT_PDF_NAME,
+        "title": clean_answer(meta_title or CURRENT_PDF_NAME),
+        "authors": clean_answer(meta_author or "Author not specified in metadata"),
+        "chunks": len(chunks),
+        "vectors": index.ntotal if index else 0,
+        "references": references
     }
+    _DOC_INFO_CACHE[CURRENT_PDF_NAME] = info
+    return info
 
 
 # ============================================================
