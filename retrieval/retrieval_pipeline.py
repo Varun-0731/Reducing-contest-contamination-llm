@@ -92,14 +92,14 @@ FAST_MODE = str(_get_config_val("FAST_MODE", "true")).lower() in ("true", "1", "
 # ============================================================
 
 # Original baseline retrieval size.
-FAISS_TOP_K = 8
+FAISS_TOP_K = 4 if FAST_MODE else 8
 
 # Maximum number of chunks used for the normal answer.
-MAX_EVIDENCE = 30
+MAX_EVIDENCE = 12 if FAST_MODE else 30
 
 # The retrieval pool is deliberately larger than the final context.
 # It is a search limit, never an evaluation-sample count.
-RETRIEVAL_POOL_MAX = 30
+RETRIEVAL_POOL_MAX = 12 if FAST_MODE else 30
 
 # Filtering is evidence-preserving: only clearly redundant or very
 # weak candidates may be removed. There is no fixed "keep N" rule.
@@ -132,7 +132,7 @@ MULTI_QUERY_TOP_K = 8
 MIN_SEMANTIC_SCORE = 0.20
 
 # Maximum number of keyword candidates added.
-MAX_KEYWORD_CANDIDATES = 10
+MAX_KEYWORD_CANDIDATES = 6 if FAST_MODE else 10
 
 
 # ============================================================
