@@ -53,6 +53,17 @@ SUGGESTED_PROMPTS = {
 }
 
 
+def get_model_display_name():
+    model = getattr(rag, "NVIDIA_MODEL", "") or "minimaxai/minimax-m3.1-flash"
+    if "minimax" in model.lower():
+        return "NVIDIA NIM MiniMax M3.1"
+    if "nemotron" in model.lower():
+        return "NVIDIA NIM Nemotron 3.5"
+    if "llama" in model.lower():
+        return "NVIDIA NIM Llama"
+    return f"NVIDIA NIM ({model.split('/')[-1]})"
+
+
 def init_state():
     defaults = {
         "case_study": "General PDF QA",
@@ -220,7 +231,6 @@ def metric_table(result):
 
 
 def render_sidebar():
-    # Brand Header - Monochromatic
     st.sidebar.markdown(
         """
         <div style="display: flex; align-items: center; gap: 0.75rem; margin-bottom: 0.5rem;">
@@ -326,6 +336,10 @@ def render_sidebar():
                 <span style="font-size: 0.82rem; color: #a1a1aa;">Dimension:</span>
                 <strong style="color: #ededed; font-family: 'JetBrains Mono', monospace;">384-dim (BGE)</strong>
             </div>
+            <div style="display: flex; justify-content: space-between; margin-bottom: 0.5rem;">
+                <span style="font-size: 0.82rem; color: #a1a1aa;">LLM Model:</span>
+                <strong style="color: #ffffff; font-family: 'JetBrains Mono', monospace; font-size: 0.78rem;">{get_model_display_name()}</strong>
+            </div>
             <div style="font-size: 0.75rem; color: #71717a; border-top: 1px solid rgba(255,255,255,0.08); padding-top: 0.5rem; word-break: break-all;">
                 📄 <strong>{info.get('pdf_name', 'None')}</strong>
             </div>
@@ -404,41 +418,109 @@ def render_chat(case_study):
     st.markdown("<div style='height: 0.6rem;'></div>", unsafe_allow_html=True)
 
     # Render Chat History
-    for message in st.session_state.chat_history:
+    for idx, message in enumerate(st.session_state.chat_history):
         with st.chat_message(message["role"]):
             st.markdown(message["content"])
 
-    # Chat Input
+            # If this is the latest assistant message and last_result is available, render telemetry and inspection expander
+            if (
+                message["role"] == "assistant"
+                and idx == len(st.session_state.chat_history) - 1
+                and st.session_state.last_result
+            ):
+                result = st.session_state.last_result
+                retrieved_cnt = result.get("retrieved_count", 0)
+                clean_cnt = result.get("clean_count", 0)
+                removed_cnt = result.get("removed_count", max(0, retrieved_cnt - clean_cnt))
+                contam_rate = result.get("contamination_rate", 0)
+                elapsed = result.get("generation_elapsed", result.get("response_time", 0))
+
+                st.markdown(
+                    f"""
+                    <div style="background: #141414; border: 1px solid rgba(255, 255, 255, 0.1); border-radius: 10px; padding: 0.75rem 1rem; margin-top: 1rem; display: flex; flex-wrap: wrap; gap: 1rem; align-items: center; justify-content: space-between;">
+                        <div style="display: flex; gap: 0.6rem; align-items: center; flex-wrap: wrap;">
+                            <span class="badge-pill badge-outline">
+                                Retrieved: <strong>{retrieved_cnt} chunks</strong>
+                            </span>
+                            <span class="badge-pill badge-white">
+                                Kept: <strong>{clean_cnt} clean</strong>
+                            </span>
+                            <span class="badge-pill badge-muted">
+                                Filtered: <strong>{removed_cnt} noise</strong>
+                            </span>
+                            <span class="badge-pill badge-contrast">
+                                Shield: <strong>{contam_rate:.1f}% reduced</strong>
+                            </span>
+                        </div>
+                        <div style="font-size: 0.8rem; color: #a1a1aa; font-family: 'JetBrains Mono', monospace;">
+                            ⏱️ Latency: <strong>{elapsed:.2f}s</strong>
+                        </div>
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
+
+                with st.expander("⚖️ Inspect Contamination Defense & Evidence Diff"):
+                    diff_tab1, diff_tab2 = st.tabs(["Side-by-Side Comparison", "Kept Evidence Context"])
+                    with diff_tab1:
+                        ui.render_comparison_view(
+                            baseline_answer=result.get("baseline_answer", ""),
+                            proposed_answer=message["content"],
+                            reference_answer=result.get("reference_answer"),
+                        )
+                    with diff_tab2:
+                        clean_evidence = result.get("clean_evidence", [])
+                        for i, chunk in enumerate(clean_evidence, 1):
+                            ui.render_chunk_card(
+                                index=i,
+                                text=rag.get_chunk_text(chunk),
+                                is_kept=True,
+                                page=rag.get_chunk_page(chunk),
+                                chunk_id=rag.get_chunk_id(chunk, fallback=f"clean_{i}"),
+                            )
+
+    # Chat Input - always accessible and preserved
+    user_input = st.chat_input("Ask any question regarding the active PDF...")
+    if user_input:
+        st.session_state.chat_history.append({
+            "role": "user",
+            "content": user_input,
+        })
+        st.rerun()
+
+
+def ensure_pending_query_processed(case_study):
     query_to_process = None
-    if st.session_state.pending_prompt:
+    if st.session_state.get("pending_prompt"):
         query_to_process = st.session_state.pending_prompt
         st.session_state.pending_prompt = None
-    else:
-        user_input = st.chat_input("Ask any question regarding the active PDF...")
-        if user_input:
-            query_to_process = user_input
+    elif (
+        st.session_state.chat_history
+        and st.session_state.chat_history[-1].get("role") == "user"
+    ):
+        query_to_process = st.session_state.chat_history[-1].get("content")
 
     if not query_to_process:
         return
 
-    # User message
-    st.session_state.chat_history.append({
-        "role": "user",
-        "content": query_to_process,
-    })
+    # Add user message if not already present
+    if not (
+        st.session_state.chat_history
+        and st.session_state.chat_history[-1].get("content") == query_to_process
+        and st.session_state.chat_history[-1].get("role") == "user"
+    ):
+        st.session_state.chat_history.append({
+            "role": "user",
+            "content": query_to_process,
+        })
 
-    with st.chat_message("user"):
-        st.markdown(query_to_process)
-
-    # Assistant processing
-    with st.chat_message("assistant"):
-        with st.spinner("🔍 Retrieving evidence pool, applying contamination filter, and generating grounded response..."):
-            start = time.time()
-            result = rag.answer_question(
-                query_to_process,
-                return_metadata=True,
-            )
-            elapsed = time.time() - start
+    with st.spinner("🔍 Retrieving evidence pool, applying contamination filter, and generating grounded response..."):
+        start = time.time()
+        result = rag.answer_question(
+            query_to_process,
+            return_metadata=True,
+        )
+        elapsed = time.time() - start
 
         answer = result.get("proposed_answer", result.get("answer", ""))
 
@@ -449,59 +531,7 @@ def render_chat(case_study):
             from legal.legal_analysis import generate_legal_analysis
             answer = generate_legal_analysis(query_to_process, result)
 
-        st.markdown(answer)
-
-        # Performance & Telemetry Strip
-        retrieved_cnt = result.get("retrieved_count", 0)
-        clean_cnt = result.get("clean_count", 0)
-        removed_cnt = result.get("removed_count", max(0, retrieved_cnt - clean_cnt))
-        contam_rate = result.get("contamination_rate", 0)
-
-        st.markdown(
-            f"""
-            <div style="background: #141414; border: 1px solid rgba(255, 255, 255, 0.1); border-radius: 10px; padding: 0.75rem 1rem; margin-top: 1rem; display: flex; flex-wrap: wrap; gap: 1rem; align-items: center; justify-content: space-between;">
-                <div style="display: flex; gap: 0.6rem; align-items: center; flex-wrap: wrap;">
-                    <span class="badge-pill badge-outline">
-                        Retrieved: <strong>{retrieved_cnt} chunks</strong>
-                    </span>
-                    <span class="badge-pill badge-white">
-                        Kept: <strong>{clean_cnt} clean</strong>
-                    </span>
-                    <span class="badge-pill badge-muted">
-                        Filtered: <strong>{removed_cnt} noise</strong>
-                    </span>
-                    <span class="badge-pill badge-contrast">
-                        Shield: <strong>{contam_rate:.1f}% reduced</strong>
-                    </span>
-                </div>
-                <div style="font-size: 0.8rem; color: #a1a1aa; font-family: 'JetBrains Mono', monospace;">
-                    ⏱️ Latency: <strong>{elapsed:.2f}s</strong>
-                </div>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-
-        # Detailed Analysis Expander inside Assistant Message
-        with st.expander("⚖️ Inspect Contamination Defense & Evidence Diff"):
-            diff_tab1, diff_tab2 = st.tabs(["Side-by-Side Comparison", "Kept Evidence Context"])
-            with diff_tab1:
-                ui.render_comparison_view(
-                    baseline_answer=result.get("baseline_answer", ""),
-                    proposed_answer=answer,
-                    reference_answer=result.get("reference_answer"),
-                )
-            with diff_tab2:
-                clean_evidence = result.get("clean_evidence", [])
-                for i, chunk in enumerate(clean_evidence, 1):
-                    ui.render_chunk_card(
-                        index=i,
-                        text=rag.get_chunk_text(chunk),
-                        is_kept=True,
-                        page=rag.get_chunk_page(chunk),
-                        chunk_id=rag.get_chunk_id(chunk, fallback=f"clean_{i}"),
-                    )
-
+        result["generation_elapsed"] = elapsed
         st.session_state.chat_history.append({
             "role": "assistant",
             "content": answer,
@@ -559,7 +589,7 @@ def render_overview(case_study):
 
     with col_specs:
         st.markdown(
-            """
+            f"""
             <div class="rag-card">
                 <h4 style="margin-top: 0; color: #ffffff;">⚙️ Ingestion & RAG Specs</h4>
                 <div style="display: flex; flex-direction: column; gap: 0.75rem; margin-top: 1rem;">
@@ -577,7 +607,7 @@ def render_overview(case_study):
                     </div>
                     <div style="display: flex; justify-content: space-between; border-bottom: 1px solid rgba(255,255,255,0.06); padding-bottom: 0.5rem;">
                         <span style="color: #a1a1aa; font-size: 0.88rem;">LLM Generator</span>
-                        <strong style="color: #ffffff; font-size: 0.88rem;">NVIDIA NIM Llama 3.2</strong>
+                        <strong style="color: #ffffff; font-size: 0.88rem;">{get_model_display_name()}</strong>
                     </div>
                     <div style="display: flex; justify-content: space-between;">
                         <span style="color: #a1a1aa; font-size: 0.88rem;">Contamination Shield</span>
@@ -893,11 +923,11 @@ def render_architecture():
 
     with col2:
         st.markdown(
-            """
+            f"""
             <div class="rag-card">
-                <h4 style="color: #ffffff; margin-top: 0;">3. NVIDIA NIM Llama 3.2 Generation</h4>
+                <h4 style="color: #ffffff; margin-top: 0;">3. {get_model_display_name()} Generation</h4>
                 <p style="color: #a1a1aa; font-size: 0.88rem; line-height: 1.6;">
-                    Grounded generation runs on Llama 3.2 via NVIDIA NIM with strict temperature boundaries. With irrelevant context removed, the model focuses solely on verified facts, avoiding distraction and hallucination.
+                    Grounded generation runs via {get_model_display_name()} with strict temperature boundaries. With irrelevant context removed, the model focuses solely on verified facts, avoiding distraction and hallucination.
                 </p>
             </div>
             """,
@@ -930,6 +960,7 @@ def main():
         case_study=case_study,
         pdf_name=info.get("pdf_name"),
         chunks=info.get("chunks", 0),
+        model_name=get_model_display_name(),
     )
 
     pages = [
@@ -942,6 +973,11 @@ def main():
     ]
 
     page = st.sidebar.radio("Navigation", pages)
+
+    # Process pending query immediately when on Chat or Retrieval Analysis
+    is_doc_ready = info["pdf_name"] not in ["No document selected", "No PDF loaded"]
+    if is_doc_ready and page in ["💬 Chat & QA", "🔎 Retrieval Analysis"]:
+        ensure_pending_query_processed(case_study)
 
     if page == "💬 Chat & QA":
         render_chat(case_study)

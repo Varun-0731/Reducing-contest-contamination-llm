@@ -428,7 +428,7 @@ def inject_custom_css():
     st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
 
 
-def render_hero_header(case_study: str, pdf_name: str = None, chunks: int = 0):
+def render_hero_header(case_study: str, pdf_name: str = None, chunks: int = 0, model_name: str = "NVIDIA NIM MiniMax M3.1"):
     """Renders a polished monochromatic header banner with live system status."""
     is_loaded = bool(pdf_name and pdf_name != "No document selected" and pdf_name != "No PDF loaded")
 
@@ -448,7 +448,7 @@ def render_hero_header(case_study: str, pdf_name: str = None, chunks: int = 0):
                         Domain: <strong>{case_study}</strong>
                     </span>
                     <span class="badge-pill badge-contrast">
-                        Model: <strong>NVIDIA NIM Llama 3.2</strong>
+                        Model: <strong>{model_name}</strong>
                     </span>
                     <span class="badge-pill badge-outline">
                         Embeddings: <strong>BAAI/bge-small-en-v1.5</strong>
