@@ -199,6 +199,28 @@ def extract_llm_text(response):
 
 
 # ============================================================
+# CONTAMINATION & INDEX DETECTION
+# ============================================================
+
+def is_index_chunk(text: str) -> bool:
+    """Detect back-of-the-book index pages, page-number catalogs, and glossaries."""
+    if not text:
+        return False
+    words = text.split()
+    if len(words) < 15:
+        return False
+    # Numbers/ranges ratio (e.g. "263-268, 479-481")
+    nums = len(re.findall(r"\b\d{1,4}(?:-\d{1,4})?\b", text))
+    if nums / len(words) > 0.12:
+        return True
+    # Patterns like 'word, 123'
+    index_pairs = len(re.findall(r"[a-zA-Z_]+\s*,\s*\d+(?:-\d+)?", text))
+    if index_pairs >= 3:
+        return True
+    return False
+
+
+# ============================================================
 # EMBEDDING MODEL
 # ============================================================
 
@@ -1547,7 +1569,7 @@ def get_beginning_chunks(number=8):
             get_chunk_text(chunk)
         )
 
-        if not text:
+        if not text or is_index_chunk(text):
             continue
 
         beginning.append(chunk)
@@ -1774,7 +1796,7 @@ def retrieve_section_chunks(
             get_chunk_text(chunk)
         )
 
-        if not text:
+        if not text or is_index_chunk(text):
             continue
 
         lower_text = text.lower()
@@ -2362,7 +2384,7 @@ def keyword_retrieve(
             get_chunk_text(chunk)
         )
 
-        if not text:
+        if not text or is_index_chunk(text):
             continue
 
         lower_text = text.lower()
@@ -2743,9 +2765,9 @@ def retrieve_evidence(
 
 def call_nim(
     prompt,
-    retries=1
+    retries=2
 ):
-    """Call NVIDIA NIM API with strict timeout, fast fallback, and direct bullet-point output."""
+    """Call NVIDIA NIM API with sufficient token budget and timeout for complete bullet-point generation."""
 
     if not prompt:
         return None
@@ -2759,35 +2781,32 @@ def call_nim(
         "Provide ONLY the direct, final, factual answer immediately."
     )
 
-    # Models to try in order: preferred model first, then ultra-fast TensorRT Llama 3.1 8B fallback
-    models_to_try = [NVIDIA_MODEL]
-    if NVIDIA_MODEL != "meta/llama-3.1-8b-instruct":
-        models_to_try.append("meta/llama-3.1-8b-instruct")
-
-    for model_name in models_to_try:
+    for attempt in range(retries):
         try:
-            print(f"NVIDIA NIM request using {model_name} (timeout=7s)...")
+            print(f"NVIDIA NIM request {attempt + 1}/{retries} using {NVIDIA_MODEL} (timeout=25s)...")
             response = client.chat.completions.create(
-                model=model_name,
+                model=NVIDIA_MODEL,
                 messages=[
                     {"role": "system", "content": system_message},
                     {"role": "user", "content": prompt}
                 ],
                 temperature=0.1,
-                max_tokens=600,
-                timeout=7.0,
+                max_tokens=1024,
+                timeout=25.0,
             )
 
             text = extract_llm_text(response)
             if text:
-                print(f"NVIDIA NIM response received from {model_name}.")
+                print(f"NVIDIA NIM response received from {NVIDIA_MODEL}.")
                 return text
 
-            print(f"NVIDIA NIM returned empty response from {model_name}.")
+            print(f"NVIDIA NIM returned empty response from {NVIDIA_MODEL}.")
 
         except Exception as e:
             last_error = e
-            print(f"NVIDIA NIM error on {model_name}: {e}")
+            print(f"NVIDIA NIM error on {NVIDIA_MODEL} (attempt {attempt + 1}): {e}")
+            if attempt < retries - 1:
+                time.sleep(1)
 
     if last_error:
         print("Last error:", str(last_error))
@@ -2815,7 +2834,7 @@ def format_evidence(evidence):
             get_chunk_text(chunk)
         )
 
-        if not text:
+        if not text or is_index_chunk(text):
             continue
 
         max_len = 800 if FAST_MODE else MAX_CHUNK_LENGTH
@@ -2897,7 +2916,7 @@ def local_pdf_fallback_answer(
             get_chunk_text(chunk)
         )
 
-        if not text:
+        if not text or is_index_chunk(text):
             continue
 
         sentences = re.split(
@@ -3032,6 +3051,10 @@ def _filter_relevance_score(question, question_type, chunk, semantic_score):
     text = clean_text(get_chunk_text(chunk)).lower()
     if not text:
         return -1.0
+
+    # Contamination shield: reject back-of-the-book index pages and catalogs
+    if is_index_chunk(text):
+        return -10.0
 
     q = clean_text(question or "").lower()
     q_tokens = set(re.findall(r"\b[a-zA-Z0-9][a-zA-Z0-9_-]{2,}\b", q))
