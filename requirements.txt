@@ -21,3 +21,5 @@ pandas
 
 # Ingestion (chunker.py)
 langchain-text-splitters
+
+torchvision
