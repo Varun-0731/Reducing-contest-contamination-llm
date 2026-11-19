@@ -651,11 +651,28 @@ def extract_pdf_text(pdf_path):
                 "text"
             )
 
-            text = clean_text(
+            # Structure-aware table extraction using PyMuPDF find_tables()
+            table_md = ""
+            try:
+                tabs = page.find_tables()
+                if tabs and tabs.tables:
+                    t_list = []
+                    for tab in tabs:
+                        t_md = tab.to_markdown()
+                        if t_md and t_md.strip():
+                            t_list.append(t_md.strip())
+                    if t_list:
+                        table_md = "\n\n[Structured Tables]:\n" + "\n\n".join(t_list)
+            except Exception:
+                table_md = ""
+
+            full_text = clean_text(
                 text
             )
+            if table_md:
+                full_text += table_md
 
-            if text:
+            if full_text:
 
                 pages.append({
 
@@ -663,7 +680,7 @@ def extract_pdf_text(pdf_path):
                         page_number + 1,
 
                     "text":
-                        text
+                        full_text
                 })
 
         document.close()
@@ -712,11 +729,28 @@ def extract_pdf_text_from_bytes(
                 "text"
             )
 
-            text = clean_text(
+            # Structure-aware table extraction using PyMuPDF find_tables()
+            table_md = ""
+            try:
+                tabs = page.find_tables()
+                if tabs and tabs.tables:
+                    t_list = []
+                    for tab in tabs:
+                        t_md = tab.to_markdown()
+                        if t_md and t_md.strip():
+                            t_list.append(t_md.strip())
+                    if t_list:
+                        table_md = "\n\n[Structured Tables]:\n" + "\n\n".join(t_list)
+            except Exception:
+                table_md = ""
+
+            full_text = clean_text(
                 text
             )
+            if table_md:
+                full_text += table_md
 
-            if text:
+            if full_text:
 
                 pages.append({
 
@@ -724,7 +758,7 @@ def extract_pdf_text_from_bytes(
                         page_number + 1,
 
                     "text":
-                        text
+                        full_text
                 })
 
         document.close()
@@ -745,60 +779,59 @@ def extract_pdf_text_from_bytes(
 def create_pdf_chunks(
     pages,
     chunk_size=PDF_CHUNK_SIZE,
-    overlap=PDF_CHUNK_OVERLAP
+    overlap=PDF_CHUNK_OVERLAP,
+    child_size=320,
+    child_overlap=60
 ):
-
+    """
+    Creates Parent-Child (Hierarchical) chunks from PDF pages.
+    - Child chunks (320 chars): high-density vectors for precise FAISS & BM25 retrieval.
+    - Parent chunks (1200 chars): full surrounding context passed to the LLM to prevent severed thoughts.
+    """
     document_chunks = []
-
     chunk_id = 0
 
     for page_data in pages:
-
-        page_number = page_data[
-            "page"
-        ]
-
-        text = page_data[
-            "text"
-        ]
+        page_number = page_data["page"]
+        text = page_data["text"]
 
         if not text:
             continue
 
-        start = 0
+        p_start = 0
+        while p_start < len(text):
+            p_end = p_start + chunk_size
+            parent_text = clean_text(text[p_start:p_end])
 
-        while start < len(text):
+            if parent_text:
+                if len(parent_text) <= child_size:
+                    document_chunks.append({
+                        "id": chunk_id,
+                        "text": parent_text,
+                        "parent_text": parent_text,
+                        "page": page_number
+                    })
+                    chunk_id += 1
+                else:
+                    c_start = 0
+                    while c_start < len(parent_text):
+                        c_end = c_start + child_size
+                        child_text = clean_text(parent_text[c_start:c_end])
+                        if child_text:
+                            document_chunks.append({
+                                "id": chunk_id,
+                                "text": child_text,
+                                "parent_text": parent_text,
+                                "page": page_number
+                            })
+                            chunk_id += 1
+                        if c_end >= len(parent_text):
+                            break
+                        c_start = c_end - child_overlap
 
-            end = start + chunk_size
-
-            chunk_text = text[
-                start:end
-            ]
-
-            chunk_text = clean_text(
-                chunk_text
-            )
-
-            if chunk_text:
-
-                document_chunks.append({
-
-                    "id":
-                        chunk_id,
-
-                    "text":
-                        chunk_text,
-
-                    "page":
-                        page_number
-                })
-
-                chunk_id += 1
-
-            if end >= len(text):
+            if p_end >= len(text):
                 break
-
-            start = end - overlap
+            p_start = p_end - overlap
 
     return document_chunks
 
@@ -2603,6 +2636,33 @@ def multi_query_retrieve(
 
 
 # ============================================================
+# RECIPROCAL RANK FUSION (RRF)
+# ============================================================
+
+def reciprocal_rank_fusion(semantic_list, keyword_list, k=60):
+    """
+    Fuses dense semantic retrieval and sparse keyword retrieval using
+    Reciprocal Rank Fusion:
+        RRF_Score(d) = sum_{m in M} 1 / (k + rank_m(d))
+    """
+    scores = {}
+    chunk_map = {}
+
+    for rank, chunk in enumerate(semantic_list, start=1):
+        cid = get_chunk_id(chunk, id(chunk))
+        chunk_map[cid] = chunk
+        scores[cid] = scores.get(cid, 0.0) + (1.0 / (k + rank))
+
+    for rank, chunk in enumerate(keyword_list, start=1):
+        cid = get_chunk_id(chunk, id(chunk))
+        chunk_map[cid] = chunk
+        scores[cid] = scores.get(cid, 0.0) + (1.0 / (k + rank))
+
+    sorted_cids = sorted(scores.keys(), key=lambda cid: scores[cid], reverse=True)
+    return [chunk_map[cid] for cid in sorted_cids]
+
+
+# ============================================================
 # RETRIEVAL EVIDENCE
 # ============================================================
 
@@ -2670,20 +2730,14 @@ def retrieve_evidence(
         add_chunk(chunk)
 
     # ========================================================
-    # KEYWORD RETRIEVAL
+    # HYBRID RETRIEVAL WITH RECIPROCAL RANK FUSION (RRF)
     # ========================================================
 
-    for chunk in keyword_retrieve(
+    keyword_results = keyword_retrieve(
         question,
         question_type,
         MAX_KEYWORD_CANDIDATES
-    ):
-
-        add_chunk(chunk)
-
-    # ========================================================
-    # MULTI-QUERY SEMANTIC RETRIEVAL
-    # ========================================================
+    )
 
     semantic_results = (
         multi_query_retrieve(
@@ -2691,8 +2745,14 @@ def retrieve_evidence(
         )
     )
 
-    for chunk in semantic_results:
+    # Mathematically fuse dense semantic & keyword candidate rankings
+    fused_hybrid_results = reciprocal_rank_fusion(
+        semantic_results,
+        keyword_results,
+        k=60
+    )
 
+    for chunk in fused_hybrid_results:
         add_chunk(chunk)
 
     # ========================================================
@@ -2919,19 +2979,26 @@ call_gemini = call_nim
 def format_evidence(evidence):
 
     formatted = []
+    seen_parents = set()
 
     for i, chunk in enumerate(
         evidence
     ):
 
-        text = clean_text(
-            get_chunk_text(chunk)
-        )
+        # Parent-Child contextual expansion: use parent context if available
+        context_text = chunk.get("parent_text") if (isinstance(chunk, dict) and chunk.get("parent_text")) else get_chunk_text(chunk)
+        text = clean_text(context_text)
 
         if not text or is_index_chunk(text):
             continue
 
-        max_len = 800 if FAST_MODE else MAX_CHUNK_LENGTH
+        # Deduplicate identical parent contexts to save token budget
+        parent_signature = text[:150].lower()
+        if parent_signature in seen_parents:
+            continue
+        seen_parents.add(parent_signature)
+
+        max_len = 1000 if FAST_MODE else MAX_CHUNK_LENGTH
         if len(text) > max_len:
 
             text = text[
@@ -2951,7 +3018,7 @@ def format_evidence(evidence):
             )
 
         formatted.append(
-            f"EVIDENCE {i + 1}"
+            f"EVIDENCE {len(formatted) + 1}"
             f"{page_info}:\n{text}"
         )
 
@@ -5649,15 +5716,14 @@ def compare_baseline_and_proposed(
             if not proposed_answer:
                 proposed_answer = "The answer is not available in the provided PDF."
 
-            # Fast baseline from raw unfiltered evidence to cut latency in half and prevent 429 rate limits
-            baseline_raw = local_pdf_fallback_answer(question, evidence[:5])
-            if baseline_raw:
-                baseline_answer = baseline_raw
-            else:
+            print("Generating BEFORE-FILTERING baseline answer (unfiltered context)...")
+            # Genuine LLM baseline from raw unfiltered evidence to fairly show contamination effect
+            baseline_answer = clean_answer(generate_answer(question, evidence[:4]))
+            if not baseline_answer:
                 baseline_answer = proposed_answer
         else:
             print("\nGenerating AFTER-FILTERING answer...")
-            proposed_answer = clean_answer(generate_answer(question, clean_evidence))
+            proposed_answer = clean_answer(generate_answer(question, clean_evidence[:4]))
             if not proposed_answer:
                 proposed_answer = "The answer is not available in the provided PDF."
             baseline_answer = proposed_answer
