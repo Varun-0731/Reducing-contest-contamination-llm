@@ -2,7 +2,12 @@ import os
 os.environ.setdefault("TRANSFORMERS_VERBOSITY", "error")
 os.environ.setdefault("TRANSFORMERS_NO_ADVISORY_WARNINGS", "1")
 os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS_WARNING", "1")
+os.environ.setdefault("HF_HUB_DISABLE_IMPLICIT_TOKEN", "1")
 os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
+import logging
+logging.getLogger("huggingface_hub").setLevel(logging.ERROR)
+logging.getLogger("transformers").setLevel(logging.ERROR)
+logging.getLogger("sentence_transformers").setLevel(logging.ERROR)
 import re
 import pickle
 import faiss
@@ -245,6 +250,8 @@ def get_embedding_model():
     try:
         from sentence_transformers import SentenceTransformer
         try:
+            import warnings
+            warnings.filterwarnings("ignore", category=UserWarning)
             from transformers.utils import logging as hf_logging
             hf_logging.set_verbosity_error()
             hf_logging.disable_progress_bar()
