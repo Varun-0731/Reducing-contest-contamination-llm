@@ -20,6 +20,21 @@ from openai import OpenAI
 from dotenv import load_dotenv
 load_dotenv()
 
+try:
+    import streamlit as st
+except ImportError:
+    st = None
+
+
+def _get_st_state(key, default=None):
+    """Safely access Streamlit session state without crashing in headless/API contexts."""
+    try:
+        if st is not None and hasattr(st, "session_state") and key in st.session_state:
+            return st.session_state[key]
+    except Exception:
+        pass
+    return default
+
 # ============================================================
 # CONFIGURATION
 # ============================================================
@@ -2783,9 +2798,9 @@ def call_nim(
         "Provide ONLY the direct, final, factual answer immediately."
     )
 
-    active_model = getattr(st.session_state, "selected_model", NVIDIA_MODEL) if (hasattr(st, "session_state") and "selected_model" in st.session_state) else NVIDIA_MODEL
-    temp = float(getattr(st.session_state, "model_temperature", 0.1)) if (hasattr(st, "session_state") and "model_temperature" in st.session_state) else 0.1
-    max_toks = int(getattr(st.session_state, "model_max_tokens", 650)) if (hasattr(st, "session_state") and "model_max_tokens" in st.session_state) else 650
+    active_model = _get_st_state("selected_model", NVIDIA_MODEL)
+    temp = float(_get_st_state("model_temperature", 0.1))
+    max_toks = int(_get_st_state("model_max_tokens", 650))
 
     for attempt in range(retries):
         try:
@@ -3295,7 +3310,7 @@ def filter_contaminated_context(question, evidence, baseline_answer=None, varian
         return []
 
     # Map interactive UI shield strictness to adaptive filter variant
-    strictness = getattr(st.session_state, "shield_strictness", "Standard (Adaptive)") if (hasattr(st, "session_state") and "shield_strictness" in st.session_state) else "Standard (Adaptive)"
+    strictness = _get_st_state("shield_strictness", "Standard (Adaptive)")
     if "Strict" in strictness:
         variant = 1
     elif "Relaxed" in strictness:
