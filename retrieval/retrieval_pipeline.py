@@ -8,6 +8,9 @@ import logging
 logging.getLogger("huggingface_hub").setLevel(logging.ERROR)
 logging.getLogger("transformers").setLevel(logging.ERROR)
 logging.getLogger("sentence_transformers").setLevel(logging.ERROR)
+logging.getLogger("streamlit").setLevel(logging.ERROR)
+logging.getLogger("streamlit.runtime").setLevel(logging.ERROR)
+logging.getLogger("streamlit.runtime.scriptrunner_utils").setLevel(logging.ERROR)
 import re
 import pickle
 import faiss
@@ -2907,7 +2910,10 @@ def retrieve_evidence(
 
 def call_nim(
     prompt,
-    retries=2
+    retries=2,
+    model_name=None,
+    temperature=None,
+    max_tokens=None
 ):
     """Call NVIDIA NIM API with direct non-streaming or clean response extraction."""
 
@@ -2923,9 +2929,9 @@ def call_nim(
         "Provide ONLY the direct, final, factual answer immediately."
     )
 
-    active_model = _get_st_state("selected_model", NVIDIA_MODEL)
-    temp = float(_get_st_state("model_temperature", 0.1))
-    max_toks = int(_get_st_state("model_max_tokens", 650))
+    active_model = model_name or _get_st_state("selected_model", NVIDIA_MODEL)
+    temp = float(temperature if temperature is not None else _get_st_state("model_temperature", 0.1))
+    max_toks = int(max_tokens or _get_st_state("model_max_tokens", 650))
 
     for attempt in range(retries):
         try:
@@ -3582,7 +3588,10 @@ def filter_contaminated_context(question, evidence, baseline_answer=None, varian
 
 def generate_answer(
     question,
-    evidence
+    evidence,
+    model_name=None,
+    temperature=None,
+    max_tokens=None
 ):
 
     if not evidence:
@@ -3641,7 +3650,10 @@ Directives:
 Answer:"""
 
     result = call_gemini(
-        prompt
+        prompt,
+        model_name=model_name,
+        temperature=temperature,
+        max_tokens=max_tokens
     )
 
     if result:
@@ -3982,7 +3994,10 @@ Return ONLY the reference answer.
 """
 
     result = call_gemini(
-        prompt
+        prompt,
+        model_name=model_name,
+        temperature=temperature,
+        max_tokens=max_tokens
     )
 
     if result:
@@ -4058,7 +4073,10 @@ FALSE
 """
 
     result = call_gemini(
-        prompt
+        prompt,
+        model_name=model_name,
+        temperature=temperature,
+        max_tokens=max_tokens
     )
 
     if not result:
@@ -4156,7 +4174,10 @@ Score must be between 0 and 1.
 """
 
     result = call_gemini(
-        prompt
+        prompt,
+        model_name=model_name,
+        temperature=temperature,
+        max_tokens=max_tokens
     )
 
     if not result:
@@ -5712,12 +5733,16 @@ def compare_baseline_and_proposed(
         if not clean_evidence:
             clean_evidence = list(evidence)
 
+        active_m = _get_st_state("selected_model", NVIDIA_MODEL)
+        t_val = float(_get_st_state("model_temperature", 0.1))
+        toks_val = int(_get_st_state("model_max_tokens", 650))
+
         if len(clean_evidence) < len(evidence):
             print("\nGenerating dual answers in parallel (proposed & baseline)...")
             from concurrent.futures import ThreadPoolExecutor
             with ThreadPoolExecutor(max_workers=2) as executor:
-                future_proposed = executor.submit(generate_answer, question, clean_evidence[:4])
-                future_baseline = executor.submit(generate_answer, question, evidence[:4])
+                future_proposed = executor.submit(generate_answer, question, clean_evidence[:4], active_m, t_val, toks_val)
+                future_baseline = executor.submit(generate_answer, question, evidence[:4], active_m, t_val, toks_val)
                 raw_prop = future_proposed.result()
                 raw_base = future_baseline.result()
 
@@ -5725,7 +5750,7 @@ def compare_baseline_and_proposed(
             baseline_answer = clean_answer(raw_base) or proposed_answer
         else:
             print("\nGenerating AFTER-FILTERING answer...")
-            proposed_answer = clean_answer(generate_answer(question, clean_evidence[:4]))
+            proposed_answer = clean_answer(generate_answer(question, clean_evidence[:4], active_m, t_val, toks_val))
             if not proposed_answer:
                 proposed_answer = "The answer is not available in the provided PDF."
             baseline_answer = proposed_answer
