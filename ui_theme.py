@@ -112,7 +112,7 @@ div[data-testid="stVerticalBlock"] > div:has(.hero-container) {
     position: sticky !important;
     top: 2.75rem !important;
     z-index: 995 !important;
-    margin-bottom: 1.25rem !important;
+    margin-bottom: 0.85rem !important;
     background: transparent !important;
 }
 
@@ -120,15 +120,17 @@ div[data-testid="stVerticalBlock"] > div:has(.hero-container) {
     position: sticky !important;
     top: 2.75rem !important;
     z-index: 995 !important;
+    max-width: 1080px !important;
+    margin: 0 auto !important;
     background: rgba(14, 14, 14, 0.97) !important;
     backdrop-filter: blur(16px) !important;
     -webkit-backdrop-filter: blur(16px) !important;
     border: 1px solid rgba(255, 255, 255, 0.14) !important;
     border-radius: 12px !important;
-    padding: 1.15rem 1.6rem !important;
+    padding: 0.75rem 1.25rem !important;
     margin-bottom: 0 !important;
     overflow: hidden !important;
-    box-shadow: 0 12px 36px rgba(0, 0, 0, 0.8) !important;
+    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.8) !important;
 }
 .hero-container::before {
     content: '';
@@ -140,24 +142,24 @@ div[data-testid="stVerticalBlock"] > div:has(.hero-container) {
     background: linear-gradient(90deg, #27272a 0%, #ffffff 50%, #27272a 100%);
 }
 .hero-title {
-    font-size: 1.85rem;
+    font-size: 1.45rem;
     font-weight: 800;
-    letter-spacing: -0.03em;
+    letter-spacing: -0.025em;
     margin: 0;
     color: #ffffff;
     display: inline-block;
 }
 .hero-subtitle {
-    font-size: 0.88rem;
+    font-size: 0.82rem;
     color: var(--text-secondary);
-    margin-top: 0.35rem;
-    margin-bottom: 0.75rem;
-    line-height: 1.45;
+    margin-top: 0.2rem;
+    margin-bottom: 0.45rem;
+    line-height: 1.4;
 }
 .hero-badges-row {
     display: flex;
     flex-wrap: wrap;
-    gap: 0.6rem;
+    gap: 0.45rem;
     align-items: center;
 }
 
@@ -434,37 +436,39 @@ def render_hero_header(case_study: str, pdf_name: str = None, chunks: int = 0, m
 
     status_html = f"""
     <div class="hero-container">
-        <div style="display: flex; justify-content: space-between; align-items: flex-start; flex-wrap: wrap; gap: 1rem;">
-            <div>
-                <div class="badge-pill badge-outline" style="margin-bottom: 0.6rem;">
-                    <span>🛡️</span> RAG Contamination Defense
+        <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 0.85rem;">
+            <div style="flex: 1; min-width: 280px;">
+                <div style="display: flex; align-items: center; gap: 0.6rem; margin-bottom: 0.25rem;">
+                    <div class="badge-pill badge-outline" style="padding: 0.15rem 0.55rem; font-size: 0.72rem;">
+                        <span>🛡️</span> RAG Contamination Defense
+                    </div>
                 </div>
                 <h1 class="hero-title">PDF RAG Intelligence System</h1>
                 <p class="hero-subtitle">
                     Mitigating context contamination, noise injection, and hallucinations with adaptive evidence filtering.
                 </p>
                 <div class="hero-badges-row">
-                    <span class="badge-pill badge-white">
+                    <span class="badge-pill badge-white" style="padding: 0.2rem 0.6rem; font-size: 0.75rem;">
                         Domain: <strong>{case_study}</strong>
                     </span>
-                    <span class="badge-pill badge-contrast">
+                    <span class="badge-pill badge-contrast" style="padding: 0.2rem 0.6rem; font-size: 0.75rem;">
                         Model: <strong>{model_name}</strong>
                     </span>
-                    <span class="badge-pill badge-outline">
+                    <span class="badge-pill badge-outline" style="padding: 0.2rem 0.6rem; font-size: 0.75rem;">
                         Embeddings: <strong>BAAI/bge-small-en-v1.5</strong>
                     </span>
                 </div>
             </div>
-            <div style="text-align: right; background: #141414; padding: 0.85rem 1.25rem; border-radius: 10px; border: 1px solid rgba(255, 255, 255, 0.1);">
-                <div style="font-size: 0.75rem; text-transform: uppercase; color: var(--text-muted); font-weight: 700; margin-bottom: 0.25rem;">
+            <div style="text-align: right; background: #141414; padding: 0.55rem 0.95rem; border-radius: 8px; border: 1px solid rgba(255, 255, 255, 0.1); min-width: 210px;">
+                <div style="font-size: 0.7rem; text-transform: uppercase; color: var(--text-muted); font-weight: 700; margin-bottom: 0.2rem; letter-spacing: 0.04em;">
                     Active Document
                 </div>
-                <div style="font-weight: 700; font-size: 0.95rem; color: #ffffff; max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">
+                <div style="font-weight: 700; font-size: 0.88rem; color: #ffffff; max-width: 240px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">
                     {pdf_name if is_loaded else 'No document loaded'}
                 </div>
-                <div style="display: flex; align-items: center; justify-content: flex-end; gap: 0.5rem; margin-top: 0.4rem;">
-                    <span class="{"pulsing-dot" if is_loaded else ""}" style="background: {"#ffffff" if is_loaded else "#52525b"}; width: 7px; height: 7px; border-radius: 50%; display: inline-block;"></span>
-                    <span style="font-size: 0.75rem; color: {"#e4e4e7" if is_loaded else "#71717a"}; font-weight: 600;">
+                <div style="display: flex; align-items: center; justify-content: flex-end; gap: 0.45rem; margin-top: 0.3rem;">
+                    <span class="{"pulsing-dot" if is_loaded else ""}" style="background: {"#ffffff" if is_loaded else "#52525b"}; width: 6px; height: 6px; border-radius: 50%; display: inline-block;"></span>
+                    <span style="font-size: 0.72rem; color: {"#e4e4e7" if is_loaded else "#71717a"}; font-weight: 600;">
                         {f"{chunks} FAISS Chunks Indexed" if is_loaded else "Awaiting PDF Import"}
                     </span>
                 </div>
