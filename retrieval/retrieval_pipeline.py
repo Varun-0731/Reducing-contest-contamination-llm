@@ -2909,7 +2909,7 @@ def call_nim(
     prompt,
     retries=2
 ):
-    """Call NVIDIA NIM API with stream ingestion for low TTFT and fast response times."""
+    """Call NVIDIA NIM API with direct non-streaming or clean response extraction."""
 
     if not prompt:
         return None
@@ -2929,7 +2929,7 @@ def call_nim(
 
     for attempt in range(retries):
         try:
-            print(f"NVIDIA NIM streaming request {attempt + 1}/{retries} using {active_model} (temp={temp}, max_tokens={max_toks})...")
+            print(f"NVIDIA NIM request {attempt + 1}/{retries} using {active_model} (temp={temp}, max_tokens={max_toks})...")
             response = client.chat.completions.create(
                 model=active_model,
                 messages=[
@@ -2938,21 +2938,23 @@ def call_nim(
                 ],
                 temperature=temp,
                 max_tokens=max_toks,
-                stream=True,
-                timeout=25.0,
+                stream=False,
+                timeout=30.0,
             )
 
-            collected = []
-            for chunk in response:
-                if chunk.choices and chunk.choices[0].delta:
-                    content = getattr(chunk.choices[0].delta, "content", None)
-                    if content:
-                        collected.append(content)
+            if response and response.choices and response.choices[0].message:
+                msg = response.choices[0].message
+                content = getattr(msg, "content", None)
+                if content and content.strip():
+                    text = content.strip()
+                    print(f"NVIDIA NIM response received from {active_model}.")
+                    return text
 
-            text = "".join(collected).strip()
-            if text:
-                print(f"NVIDIA NIM response received from {active_model}.")
-                return text
+                reasoning = getattr(msg, "reasoning_content", None)
+                if reasoning and reasoning.strip():
+                    text = reasoning.strip()
+                    print(f"NVIDIA NIM reasoning extracted from {active_model}.")
+                    return text
 
             print(f"NVIDIA NIM returned empty response from {active_model}.")
 
@@ -5711,16 +5713,16 @@ def compare_baseline_and_proposed(
             clean_evidence = list(evidence)
 
         if len(clean_evidence) < len(evidence):
-            print("\nGenerating AFTER-FILTERING answer (clean context)...")
-            proposed_answer = clean_answer(generate_answer(question, clean_evidence[:4]))
-            if not proposed_answer:
-                proposed_answer = "The answer is not available in the provided PDF."
+            print("\nGenerating dual answers in parallel (proposed & baseline)...")
+            from concurrent.futures import ThreadPoolExecutor
+            with ThreadPoolExecutor(max_workers=2) as executor:
+                future_proposed = executor.submit(generate_answer, question, clean_evidence[:4])
+                future_baseline = executor.submit(generate_answer, question, evidence[:4])
+                raw_prop = future_proposed.result()
+                raw_base = future_baseline.result()
 
-            print("Generating BEFORE-FILTERING baseline answer (unfiltered context)...")
-            # Genuine LLM baseline from raw unfiltered evidence to fairly show contamination effect
-            baseline_answer = clean_answer(generate_answer(question, evidence[:4]))
-            if not baseline_answer:
-                baseline_answer = proposed_answer
+            proposed_answer = clean_answer(raw_prop) or "The answer is not available in the provided PDF."
+            baseline_answer = clean_answer(raw_base) or proposed_answer
         else:
             print("\nGenerating AFTER-FILTERING answer...")
             proposed_answer = clean_answer(generate_answer(question, clean_evidence[:4]))
