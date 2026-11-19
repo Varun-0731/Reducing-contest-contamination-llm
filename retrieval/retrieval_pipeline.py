@@ -467,19 +467,40 @@ def clean_answer(answer):
     if not answer:
         return ""
 
-    # 1. If model generated an internal draft/monologue followed by "Final answer:" or "Direct answer:", extract it immediately
-    final_match = re.search(r"(?:final answer|direct answer):\s*(.*)", answer, flags=re.IGNORECASE | re.DOTALL)
+    # 1. Strip explicit thinking / thought tags
+    answer = re.sub(r"<(?:think|thought)>.*?</(?:think|thought)>", "", answer, flags=re.DOTALL | re.IGNORECASE).strip()
+
+    # 2. Extract final / direct answer if clearly labeled
+    final_match = re.search(r"(?:final answer|direct answer|answer):\s*(.*)", answer, flags=re.IGNORECASE | re.DOTALL)
     if final_match and len(final_match.group(1).strip()) > 10:
-        answer = final_match.group(1).strip()
+        candidate = final_match.group(1).strip()
+        if not re.match(r"^(?:I need to|Let me|The question|The user)", candidate, flags=re.IGNORECASE):
+            answer = candidate
     else:
-        # Strip thinking tags and monologue preambles
-        answer = re.sub(r"<think>.*?</think>", "", answer, flags=re.DOTALL).strip()
-        answer = re.sub(r"^The user is asking [^\n\.\?]+[\.\?]\s*(?:I need to|Let me)[^\n\.\?]+[\.\?:\-]*\s*", "", answer, flags=re.IGNORECASE).strip()
-        answer = re.sub(r"^The user is asking about [^\n\.\?]+[\.\?]\s*(?:I need to|Let me)[^\n\.\?]+[\.\?:\-]*\s*", "", answer, flags=re.IGNORECASE).strip()
+        # 3. If answer begins with internal monologue ("The question is asking...", "The user is asking..."):
+        if re.match(r"^(?:the\s+(?:question|user)\s+is\s+asking|this\s+question\s+asks|the\s+question\s+itself)", answer, flags=re.IGNORECASE):
+            draft_match = re.search(r"(?:let me draft:?|draft:)\s*(.*?)(?=\n\s*(?:i should|rule \d+|avoid mentioning|\Z))", answer, flags=re.IGNORECASE | re.DOTALL)
+            if draft_match and len(draft_match.group(1).strip()) > 15:
+                answer = draft_match.group(1).strip()
+            else:
+                paragraphs = [p.strip() for p in answer.split("\n\n") if p.strip()]
+                clean_paragraphs = []
+                for p in paragraphs:
+                    if re.match(r"^(?:the\s+(?:question|user)|i\s+need\s+to|let\s+me|key\s+points|rule\s+\d+|draft:|hmm|given\s+the\s+question)", p, flags=re.IGNORECASE):
+                        continue
+                    if re.search(r"(?:rule\s+\d+\s+says|avoid\s+mentioning|do\s+not\s+mention)", p, flags=re.IGNORECASE):
+                        continue
+                    clean_paragraphs.append(p)
+                if clean_paragraphs:
+                    answer = "\n\n".join(clean_paragraphs)
+
+        # 4. Strip leftover monologue preambles
+        answer = re.sub(r"^The (?:user|question) is asking [^\n\.\?]+[\.\?]\s*(?:I need to|Let me)[^\n\.\?]+[\.\?:\-]*\s*", "", answer, flags=re.IGNORECASE).strip()
         answer = re.sub(r"^Here'?s a thinking process:.*?(?=\n\n|\Z)", "", answer, flags=re.DOTALL | re.IGNORECASE).strip()
-        answer = re.sub(r"^Draft:.*?(?=\n\n|\Z)", "", answer, flags=re.DOTALL | re.IGNORECASE).strip()
-        # If text still starts with "The user is asking...", strip that sentence
-        answer = re.sub(r"^The user is asking [^\n]+\n*", "", answer, flags=re.IGNORECASE).strip()
+        answer = re.sub(r"^The (?:user|question) is asking [^\n]+\n*", "", answer, flags=re.IGNORECASE).strip()
+
+    # 5. Strip trailing self-deliberation (e.g. "Rule 11 says...", "I should keep it focused...", "Avoid mentioning...")
+    answer = re.sub(r"\n\s*(?:rule\s+\d+\s+says|i\s+should\s+(?:keep|avoid|write)|avoid\s+mentioning).*$", "", answer, flags=re.DOTALL | re.IGNORECASE).strip()
 
     answer = re.sub(
         r"#{1,6}\s*",
@@ -1226,17 +1247,29 @@ def detect_question_type(question):
     # TITLE
     # --------------------------------------------------------
 
-    if any(
-        x in q
-        for x in [
-            "main title",
-            "title of the pdf",
-            "title of the paper",
-            "paper title",
-            "what is the title",
-            "name of the paper",
-            "title of this document"
-        ]
+    if (
+        any(
+            x in q
+            for x in [
+                "main title",
+                "title of the pdf",
+                "title of the paper",
+                "title of the book",
+                "title of this book",
+                "title of this document",
+                "paper title",
+                "book title",
+                "what is the title",
+                "what's the title",
+                "name of the paper",
+                "name of the book",
+                "name of this book",
+                "what book is this",
+                "what is this book"
+            ]
+        )
+        or bool(re.search(r"\b(book|paper|document|pdf)\s+title\b", q))
+        or bool(re.search(r"\btitle\s+of\s+(this|the)\s+(book|paper|document|pdf|work)\b", q))
     ):
 
         return "TITLE"
@@ -1245,17 +1278,42 @@ def detect_question_type(question):
     # AUTHOR
     # --------------------------------------------------------
 
-    if any(
-        x in q
-        for x in [
-            "who are the authors",
-            "authors of the paper",
-            "authors of the pdf",
-            "author names",
-            "who wrote the paper",
-            "who wrote this paper",
-            "authors of this document"
-        ]
+    if (
+        any(
+            x in q
+            for x in [
+                "who are the authors",
+                "authors of the paper",
+                "authors of the pdf",
+                "authors of the book",
+                "author names",
+                "who wrote the paper",
+                "who wrote this paper",
+                "who wrote the book",
+                "who wrote this book",
+                "who wrote this",
+                "who wrote it",
+                "authors of this document",
+                "author of this book",
+                "author of the book",
+                "author of this pdf",
+                "author of the pdf",
+                "author of this document",
+                "author of the document",
+                "who is the author",
+                "who was the author",
+                "who's the author",
+                "who are the writers",
+                "who is the writer",
+                "who was the writer",
+                "who authored",
+                "book author",
+                "paper author"
+            ]
+        )
+        or bool(re.search(r"\bwho\s+(is|was|are)\s+(the\s+)?(author|authors|writer|writers|creator)\b", q))
+        or bool(re.search(r"\bwho\s+wrote\s+(this|the)?\s*(book|paper|pdf|document|work)?\b", q))
+        or bool(re.search(r"\b(author|authors)\s+of\s+(this|the)\b", q))
     ):
 
         return "AUTHOR"
@@ -3467,7 +3525,7 @@ def generate_answer(
         return None
 
     # Focus context on top relevant chunks to prevent latency & distraction
-    max_ev = 2 if FAST_MODE else 4
+    max_ev = 4 if FAST_MODE else 6
     if len(evidence) > max_ev:
         evidence = evidence[:max_ev]
 
@@ -3477,24 +3535,39 @@ def generate_answer(
         )
     )
 
-    if evidence_text and len(evidence_text) > 1500:
-        evidence_text = evidence_text[:1500]
+    if evidence_text and len(evidence_text) > 3500:
+        evidence_text = evidence_text[:3500]
 
     if not evidence_text:
         print("generate_answer(): evidence text empty.")
         return None
 
+    # Inject authoritative document metadata header if available
+    doc_meta_prefix = ""
+    try:
+        doc_info = get_document_info()
+        doc_title = doc_info.get("title")
+        doc_author = doc_info.get("authors")
+        if doc_title and doc_title != "No document selected":
+            doc_meta_prefix = f"[Document Metadata: Title: {doc_title}"
+            if doc_author and "not specified" not in doc_author.lower():
+                doc_meta_prefix += f" | Author(s): {doc_author}"
+            doc_meta_prefix += "]\n\n"
+    except Exception:
+        doc_meta_prefix = ""
+
     prompt = f"""Context from PDF evidence:
-{evidence_text}
+{doc_meta_prefix}{evidence_text}
 
 Question:
 {question}
 
 Directives:
-1. Answer the question directly and factually using ONLY the provided PDF context above.
-2. Format the response using clean, structured bullet points (- ) with key terms bolded (**term**) for readability.
-3. If the context does not contain the answer, reply ONLY: "The answer is not available in the provided PDF."
-4. Provide ONLY the final answer directly with no thinking, no draft, and no intro filler.
+1. Answer the question directly, factually, and truthfully using ONLY the provided PDF context above.
+2. Provide a clear, natural, and concise answer. Use bullet points (- ) ONLY when the question asks for a list, multiple steps, or distinct components. For simple single-fact questions (e.g. author name, title, date, single definition), answer in 1-2 direct sentences without forced bullet points.
+3. Document Disambiguation: If asked who wrote or authored the document/book, identify the primary author/creator of THIS work (typically from the cover, title page, copyright page, or document metadata). Do NOT confuse reviewed authors, foreword writers, acknowledgements, or external citations with the author of this work.
+4. If the context does not contain the answer, reply ONLY: "The answer is not available in the provided PDF."
+5. Output ONLY the final answer directly with no thinking, no draft, no meta-rules, and no intro filler.
 
 Answer:"""
 
